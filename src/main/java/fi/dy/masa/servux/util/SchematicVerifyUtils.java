@@ -1,24 +1,34 @@
 package fi.dy.masa.servux.util;
 
+import java.util.Map;
 import java.util.Set;
 import javax.annotation.Nullable;
 
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
 import net.minecraft.core.Vec3i;
+import net.minecraft.nbt.CompoundTag;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.ChestBlock;
 import net.minecraft.world.level.block.Mirror;
 import net.minecraft.world.level.block.Rotation;
+import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.block.state.properties.ChestType;
 
 import fi.dy.masa.servux.Servux;
+import fi.dy.masa.servux.dataproviders.LitematicsDataProvider;
 import fi.dy.masa.servux.schematic.LitematicaSchematic;
 import fi.dy.masa.servux.schematic.container.LitematicaBlockStateContainer;
 import fi.dy.masa.servux.schematic.placement.SchematicPlacement;
 import fi.dy.masa.servux.schematic.placement.SubRegionPlacement;
 import fi.dy.masa.servux.schematic.verifier.VerifyMismatchType;
+import fi.dy.masa.servux.schematic.verifier.VerifyNbtComparator;
 import fi.dy.masa.servux.schematic.verifier.VerifyResult;
+import fi.dy.masa.servux.util.data.tag.CompoundData;
+import fi.dy.masa.servux.util.data.tag.converter.DataConverterNbt;
 import fi.dy.masa.servux.util.position.IntBoundingBox;
 import fi.dy.masa.servux.util.position.LayerRange;
 import fi.dy.masa.servux.util.position.PositionUtils;
@@ -48,7 +58,8 @@ public class SchematicVerifyUtils
 	                                             SchematicPlacement schematicPlacement,
 	                                             PasteLayerBehavior layerBehavior,
 	                                             @Nullable LayerRange layerRange,
-	                                             VerifyResult result)
+	                                             VerifyResult result,
+	                                             @Nullable VerifyNbtComparator nbtComparator)
 	{
 		LitematicaSchematic schematic = schematicPlacement.getSchematic();
 		Set<String> regionsTouchingChunk = schematicPlacement.getRegionsTouchingChunk(chunkPos.x(), chunkPos.z());
@@ -69,8 +80,11 @@ public class SchematicVerifyUtils
 
 			if (placement != null && placement.isEnabled())
 			{
-				if (verifyBlocksWithinChunk(world, chunkPos, regionName, container, origin,
-				                            schematicPlacement, placement, layerBehavior, layerRange, result) == false)
+				Map<BlockPos, CompoundData> blockEntityMap = schematic.getBlockEntityMapForRegion(regionName);
+
+				if (verifyBlocksWithinChunk(world, chunkPos, regionName, container, blockEntityMap, origin,
+				                            schematicPlacement, placement, layerBehavior, layerRange,
+				                            result, nbtComparator) == false)
 				{
 					allSuccess = false;
 					Servux.LOGGER.warn("Invalid/missing schematic data in schematic '{}' for sub-region '{}'", schematic.getMetadata().getName(), regionName);
@@ -83,12 +97,14 @@ public class SchematicVerifyUtils
 
 	public static boolean verifyBlocksWithinChunk(ServerLevel world, ChunkPos chunkPos, String regionName,
 	                                              LitematicaBlockStateContainer container,
+	                                              @Nullable Map<BlockPos, CompoundData> blockEntityMap,
 	                                              BlockPos origin,
 	                                              SchematicPlacement schematicPlacement,
 	                                              SubRegionPlacement placement,
 	                                              PasteLayerBehavior layerBehavior,
 	                                              @Nullable LayerRange layerRange,
-	                                              VerifyResult result)
+	                                              VerifyResult result,
+	                                              @Nullable VerifyNbtComparator nbtComparator)
 	{
 		IntBoundingBox bounds = schematicPlacement.getBoxWithinChunkForRegion(regionName, chunkPos.x(), chunkPos.z());
 		Vec3i regionSize = schematicPlacement.getSchematic().getAreaSize(regionName);
@@ -169,6 +185,10 @@ public class SchematicVerifyUtils
 						continue;
 					}
 
+					posMutable.set(x, y, z);
+					CompoundData teNBT = blockEntityMap != null ? blockEntityMap.get(posMutable) : null;
+					BlockPos origPos = posMutable.immutable();
+
 					posMutable.set(posMinRelMinusRegX + x,
 					               posMinRelMinusRegY + y,
 					               posMinRelMinusRegZ + z);
@@ -181,13 +201,40 @@ public class SchematicVerifyUtils
 						continue;
 					}
 
+					// Same double chest correction the paste path applies, so that a mirrored
+					// placement is verified against the contents a paste would actually write
+					if (blockEntityMap != null && expected.hasBlockEntity() && expected.is(Blocks.CHEST) &&
+						mirrorMain != Mirror.NONE &&
+						!(expected.getValue(ChestBlock.TYPE) == ChestType.SINGLE) &&
+						LitematicsDataProvider.INSTANCE.isEnabled() &&
+						LitematicsDataProvider.INSTANCE.fixChestMirror.getValue())
+					{
+						Direction facing = expected.getValue(ChestBlock.FACING);
+						Direction.Axis axis = facing.getAxis();
+						ChestType type = expected.getValue(ChestBlock.TYPE).getOpposite();
+
+						if (axis != Direction.Axis.Y)
+						{
+							Direction facingAdj = type == ChestType.LEFT ? facing.getCounterClockWise(Direction.Axis.Y) : facing.getClockWise(Direction.Axis.Y);
+							BlockPos posAdj = origPos.relative(facingAdj);
+							teNBT = blockEntityMap.getOrDefault(posAdj, teNBT);
+						}
+					}
+
 					if (mirrorMain != Mirror.NONE) { expected = expected.mirror(mirrorMain); }
 					if (mirrorSub != Mirror.NONE)  { expected = expected.mirror(mirrorSub); }
 					if (rotationCombined != Rotation.NONE) { expected = expected.rotate(rotationCombined); }
 
 					BlockState found = world.getBlockState(pos);
 
-					classify(expected, found, pos, result);
+					boolean stateMatches = classify(expected, found, pos, result);
+
+					// Contents are only meaningful once the block itself is right; a wrong
+					// block is already reported and would double count here
+					if (stateMatches && nbtComparator != null)
+					{
+						verifyBlockEntity(world, pos, expected, found, teNBT, result, nbtComparator);
+					}
 				}
 			}
 		}
@@ -206,7 +253,7 @@ public class SchematicVerifyUtils
 	 * ignore-block registry) are deliberately <i>not</i> applied here; they are display
 	 * filters that the client applies to this raw classification.
 	 */
-	private static void classify(BlockState expected, BlockState found, BlockPos pos, VerifyResult result)
+	private static boolean classify(BlockState expected, BlockState found, BlockPos pos, VerifyResult result)
 	{
 		if (!expected.isAir()) { result.addSchematicBlock(); }
 		if (!found.isAir())    { result.addWorldBlock(); }
@@ -225,10 +272,57 @@ public class SchematicVerifyUtils
 			{
 				result.add(VerifyMismatchType.EXTRA, expected, found, pos);
 			}
+
+			return false;
 		}
-		else
+
+		result.addCorrectState(found, !expected.isAir());
+
+		return true;
+	}
+
+	/**
+	 * Compares container contents at a position whose block state already matches.
+	 * <p>
+	 * A {@code WRONG_NBT} entry therefore always carries two identical block states, and
+	 * the position is <i>also</i> counted as a correct state - the block is right, only
+	 * its contents are not. This category's count deliberately overlaps the others.
+	 */
+	private static void verifyBlockEntity(ServerLevel world, BlockPos pos,
+	                                      BlockState expected, BlockState found,
+	                                      @Nullable CompoundData expectedNbt,
+	                                      VerifyResult result,
+	                                      VerifyNbtComparator comparator)
+	{
+		if (!found.hasBlockEntity())
 		{
-			result.addCorrectState(found, !expected.isAir());
+			return;
+		}
+
+		BlockEntity be = world.getBlockEntity(pos);
+
+		if (be == null)
+		{
+			return;
+		}
+
+		// The comparator works on vanilla tags so that it is identical across branches
+		CompoundTag expectedTag = expectedNbt != null ? DataConverterNbt.toVanillaCompound(expectedNbt) : null;
+		CompoundTag foundTag;
+
+		try
+		{
+			foundTag = be.saveWithFullMetadata(world.registryAccess());
+		}
+		catch (Exception e)
+		{
+			Servux.LOGGER.warn("verifyBlockEntity(): failed to read the block entity at {}; {}", pos.toShortString(), e.getLocalizedMessage());
+			return;
+		}
+
+		if (comparator.isComparable(expectedTag, foundTag) && comparator.differs(expectedTag, foundTag))
+		{
+			result.add(VerifyMismatchType.WRONG_NBT, expected, found, pos);
 		}
 	}
 }

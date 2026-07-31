@@ -41,6 +41,8 @@ import fi.dy.masa.servux.schematic.LitematicaSchematic;
 import fi.dy.masa.servux.schematic.placement.SchematicPlacement;
 import fi.dy.masa.servux.schematic.selection.Box;
 import fi.dy.masa.servux.schematic.transmit.SchematicBufferManager;
+import fi.dy.masa.servux.schematic.verifier.VerifyChunkLoader;
+import fi.dy.masa.servux.schematic.verifier.VerifyNbtComparator;
 import fi.dy.masa.servux.schematic.verifier.VerifyReport;
 import fi.dy.masa.servux.schematic.verifier.VerifyResult;
 import fi.dy.masa.servux.schematic.verifier.VerifySession;
@@ -82,6 +84,13 @@ public class LitematicsDataProvider extends DataProviderBase
 	public final ServuxIntSetting verifyMaxResultPositions = new ServuxIntSetting(this, "verify_max_result_positions", 200000, 10000000, 0);
 	public final ServuxIntSetting verifySessionTimeout = new ServuxIntSetting(this, "verify_session_timeout", 300, 86400, 0);
 	public final ServuxBoolSetting verifySyncmaticaInterop = new ServuxBoolSetting(this, "verify_syncmatica_interop", true);
+	public final ServuxBoolSetting verifyForceLoadChunks = new ServuxBoolSetting(this, "verify_force_load_chunks", true);
+	public final ServuxBoolSetting verifyGenerateMissingChunks = new ServuxBoolSetting(this, "verify_generate_missing_chunks", false);
+	public final ServuxIntSetting verifyMaxChunkLoadsPerTick = new ServuxIntSetting(this, "verify_max_chunk_loads_per_tick", 2, 16, 1);
+	public final ServuxIntSetting verifyPauseMsptThreshold = new ServuxIntSetting(this, "verify_pause_mspt_threshold", 45, 1000, 0);
+	public final ServuxBoolSetting verifyNbt = new ServuxBoolSetting(this, "verify_nbt", true);
+	public final ServuxBoolSetting verifyNbtSlotExact = new ServuxBoolSetting(this, "verify_nbt_slot_exact", false);
+	public final ServuxBoolSetting verifyNbtStrict = new ServuxBoolSetting(this, "verify_nbt_strict", false);
 	private final List<IServuxSetting<?>> settings = List.of(
 			this.permissionLevel,
 			this.pastePermissionLevel,
@@ -94,7 +103,14 @@ public class LitematicsDataProvider extends DataProviderBase
 			this.deDuplicateSchematicEntities,
 			this.verifyMaxResultPositions,
 			this.verifySessionTimeout,
-			this.verifySyncmaticaInterop
+			this.verifySyncmaticaInterop,
+			this.verifyForceLoadChunks,
+			this.verifyGenerateMissingChunks,
+			this.verifyMaxChunkLoadsPerTick,
+			this.verifyPauseMsptThreshold,
+			this.verifyNbt,
+			this.verifyNbtSlotExact,
+			this.verifyNbtStrict
 	);
 
 	private final List<UUID> registeredPlayers = new ArrayList<>();
@@ -120,6 +136,7 @@ public class LitematicsDataProvider extends DataProviderBase
 		// know this key simply ignore it. Clients branch on the capability, not the version.
 		ListData features = new ListData();
 		features.add(new StringData("verify"));
+		features.add(new StringData("verify_nbt"));
 		this.metadata.put("Features", features);
 
 		// Litematic-Transmit Dir
@@ -812,8 +829,20 @@ public class LitematicsDataProvider extends DataProviderBase
 		// A layer range only takes effect when the behavior asks for it; see shouldPasteBlock()
 		PasteLayerBehavior layerBehavior = layerRange != null ? PasteLayerBehavior.RENDERED_ONLY : PasteLayerBehavior.ALL;
 
+		VerifyChunkLoader chunkLoader = this.verifyForceLoadChunks.getValue()
+		                              ? new VerifyChunkLoader(level,
+		                                                      this.verifyGenerateMissingChunks.getValue(),
+		                                                      this.verifyMaxChunkLoadsPerTick.getValue())
+		                              : null;
+
+		VerifyNbtComparator nbtComparator = this.verifyNbt.getValue()
+		                                  ? new VerifyNbtComparator(this.verifyNbtSlotExact.getValue(),
+		                                                            this.verifyNbtStrict.getValue())
+		                                  : null;
+
 		TaskVerifySchematicPerChunk task = new TaskVerifySchematicPerChunk(
-				ctx, Collections.singletonList(placement), layerRange, layerBehavior, result, null);
+				ctx, Collections.singletonList(placement), layerRange, layerBehavior, result,
+				chunkLoader, nbtComparator, this.verifyPauseMsptThreshold.getValue(), null);
 
 		task.setOnComplete(() ->
 		                   {

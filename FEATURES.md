@@ -20,8 +20,10 @@ Servux New Features (0.3.7+)
 * `litematic_data` - Provides Litematica with entity/tile entity NBT information for use with `InfoOverlay`; and also provides Litematic saving and pasting services.  It can be activated by `Generic` -> `entityDataSync`.
   * Provides backend setting for `fix_rail_rotations`, `fix_stairs_mirror`, && `fix_chest_mirror`.
   * Litematic Paste operations has a separate permissions node.
-  * Provides server side Schematic Verification via `/servux verify`, which is not bound by the client's render distance.  Verification is read-only: it never writes to the world, and it reports chunks it could not read instead of force loading them.
-    * Mismatches are reported per category (`Missing`, `Extra`, `Wrong Block`, `Wrong State`), with clickable coordinates that suggest a teleport, so the results are usable from vanilla clients with no mod installed.
+  * Provides server side Schematic Verification via `/servux verify`, which is not bound by the client's render distance.  Verification is read-only: it never writes to the world, never generates terrain, and never stalls the server thread.
+    * Mismatches are reported per category (`Missing`, `Extra`, `Wrong Block`, `Wrong State`, `Wrong Contents`), with clickable coordinates that suggest a teleport, so the results are usable from vanilla clients with no mod installed.
+    * Chunks outside the client's render distance are loaded on demand, so a verification covers the whole build.  Loading is non-blocking and the chunks are loaded but §onot ticked§r -- no mob spawning, no redstone, no block or random ticks.  Chunks that have never been generated are §oreported, not generated§r, so inspecting a build never enlarges the world; `verify_generate_missing_chunks` opts into generating them.  New loads back off while the server's tick time is high (`verify_pause_mspt_threshold`).
+    * `Wrong Contents` compares container inventories, which Litematica's client side verifier cannot do at all -- it only compares block states, so an empty chest counts as correct there.  Only checked where the block state already matches, so this count overlaps the correct-state count rather than adding to the other categories.
     * Can verify schematics already shared through Syncmatica without an upload, by reading its placement manifest from disk.  This is a read-only, unofficial interface and can be turned off with `verify_syncmatica_interop`.
     * Verify operations have a separate permissions node.
 * `tweaks_data` - Provides Tweakeroo with entity/tile entity NBT information for `inventoryPreview`.  Can be expanded in the future to support more advanced Tweaks.  It can be activated by enabling `entityDataSync`.
@@ -81,7 +83,14 @@ Servux New Features (0.3.7+)
     "fix_chest_mirror": true,
     "verify_max_result_positions": 200000,
     "verify_session_timeout": 300,
-    "verify_syncmatica_interop": true
+    "verify_syncmatica_interop": true,
+    "verify_force_load_chunks": true,
+    "verify_generate_missing_chunks": false,
+    "verify_max_chunk_loads_per_tick": 2,
+    "verify_pause_mspt_threshold": 45,
+    "verify_nbt": true,
+    "verify_nbt_slot_exact": false,
+    "verify_nbt_strict": false
   },
   "structure_bounding_boxes": {
     "permission_level": 0,
@@ -127,5 +136,4 @@ Servux New Features (0.3.7+)
   * Read-only Syncmatica interop already exists for `/servux verify`; sharing schematics over Servux's own channel is still to come.
 * Extend server side verification:
   * Stream results to the Litematica Verifier GUI over the task response packets, so mismatches can be highlighted in world.  Advertised to clients through the `Features` metadata list rather than a protocol version bump.
-  * Optionally force load unloaded chunks (without running world gen) so that a verification covers a build in full.
-  * Compare container contents, reported as a `Wrong Contents` category.
+  * Compare entities as well as blocks and container contents.
