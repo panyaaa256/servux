@@ -20,6 +20,10 @@ Servux New Features (0.3.7+)
 * `litematic_data` - Provides Litematica with entity/tile entity NBT information for use with `InfoOverlay`; and also provides Litematic saving and pasting services.  It can be activated by `Generic` -> `entityDataSync`.
   * Provides backend setting for `fix_rail_rotations`, `fix_stairs_mirror`, && `fix_chest_mirror`.
   * Litematic Paste operations has a separate permissions node.
+  * Provides server side Schematic Verification via `/servux verify`, which is not bound by the client's render distance.  Verification is read-only: it never writes to the world, and it reports chunks it could not read instead of force loading them.
+    * Mismatches are reported per category (`Missing`, `Extra`, `Wrong Block`, `Wrong State`), with clickable coordinates that suggest a teleport, so the results are usable from vanilla clients with no mod installed.
+    * Can verify schematics already shared through Syncmatica without an upload, by reading its placement manifest from disk.  This is a read-only, unofficial interface and can be turned off with `verify_syncmatica_interop`.
+    * Verify operations have a separate permissions node.
 * `tweaks_data` - Provides Tweakeroo with entity/tile entity NBT information for `inventoryPreview`.  Can be expanded in the future to support more advanced Tweaks.  It can be activated by enabling `entityDataSync`.
   * Can provide the server side method for `stackable_shulkers` with the related `stackable_shulkers_count`, simillar to how Carpet can provide this.
   * This implementation also provides a lightweight `stackable_shulkers_fix` config for hoppers coded for Carpet by [KikuGie] under their [stackable-shulkers-fix] mod.
@@ -33,6 +37,11 @@ Servux New Features (0.3.7+)
   * `info` [setting] -- Displays the current configuration for the [setting].
   * `list` [dataprovider] -- Lists all settings and their respective values.  Can be limited to a specific [dataprovider].
   * `search` [pattern] --- Lists all settings matching the search [pattern].
+  * `verify list` -- Lists the schematic placements shared through Syncmatica that can be verified.
+  * `verify start` [placement] -- Starts a server side verification of a shared [placement], given by display name or UUID.
+  * `verify status` -- Shows the progress of the verifications currently running.
+  * `verify cancel` [session] -- Cancels a running verification; defaults to your own.
+  * `verify show` [category] [page] -- Lists the mismatches of one [category] from your latest verification.  Each coordinate can be clicked to auto-complete a teleport to it.
   * All config settings can be clicked upon to auto-complete a `set` command; after using `info`, `list` or `search`; similar to how the `/carpet` command works.
   * Available settings are modularized per their respective [dataprovider].
   * All `/servux` command text can be translated using the available i18n language files.  Currently only English `en_us` and Chinese (Traditional) `zh_cn` is available, but more may become available as people offer translation assistance.  If you wish to contribute translations; please visit https://translate.sakuraryoko.com -- and if you need a language file added; please contact me.
@@ -66,9 +75,13 @@ Servux New Features (0.3.7+)
   "litematic_data": {
     "permission_level": 0,
     "permission_level_paste": 0,
+    "permission_level_verify": 0,
     "fix_rail_rotations": true,
     "fix_stairs_mirror": true,
-    "fix_chest_mirror": true
+    "fix_chest_mirror": true,
+    "verify_max_result_positions": 200000,
+    "verify_session_timeout": 300,
+    "verify_syncmatica_interop": true
   },
   "structure_bounding_boxes": {
     "permission_level": 0,
@@ -111,3 +124,8 @@ Servux New Features (0.3.7+)
 
 ## Future plans:
 * Add Syncmatica-like protocol for Litematica.
+  * Read-only Syncmatica interop already exists for `/servux verify`; sharing schematics over Servux's own channel is still to come.
+* Extend server side verification:
+  * Stream results to the Litematica Verifier GUI over the task response packets, so mismatches can be highlighted in world.  Advertised to clients through the `Features` metadata list rather than a protocol version bump.
+  * Optionally force load unloaded chunks (without running world gen) so that a verification covers a build in full.
+  * Compare container contents, reported as a `Wrong Contents` category.

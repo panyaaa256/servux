@@ -4,10 +4,12 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.*;
+import java.util.function.Consumer;
 import javax.annotation.Nullable;
 import org.apache.commons.lang3.tuple.Pair;
 import org.jetbrains.annotations.ApiStatus;
 
+import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.core.BlockPos;
 import net.minecraft.resources.Identifier;
 import net.minecraft.server.level.ServerLevel;
@@ -34,10 +36,15 @@ import fi.dy.masa.servux.scheduler.tasks.TaskDeleteArea;
 import fi.dy.masa.servux.scheduler.tasks.TaskFillArea;
 import fi.dy.masa.servux.scheduler.tasks.TaskPasteSchematicPerChunkBase;
 import fi.dy.masa.servux.scheduler.tasks.TaskPasteSchematicPerChunkDirect;
+import fi.dy.masa.servux.scheduler.tasks.TaskVerifySchematicPerChunk;
 import fi.dy.masa.servux.schematic.LitematicaSchematic;
 import fi.dy.masa.servux.schematic.placement.SchematicPlacement;
 import fi.dy.masa.servux.schematic.selection.Box;
 import fi.dy.masa.servux.schematic.transmit.SchematicBufferManager;
+import fi.dy.masa.servux.schematic.verifier.VerifyReport;
+import fi.dy.masa.servux.schematic.verifier.VerifyResult;
+import fi.dy.masa.servux.schematic.verifier.VerifySession;
+import fi.dy.masa.servux.schematic.verifier.VerifySessionManager;
 import fi.dy.masa.servux.settings.IServuxSetting;
 import fi.dy.masa.servux.settings.ServuxBoolSetting;
 import fi.dy.masa.servux.settings.ServuxIntSetting;
@@ -49,6 +56,7 @@ import fi.dy.masa.servux.util.data.Constants;
 import fi.dy.masa.servux.util.data.tag.BaseData;
 import fi.dy.masa.servux.util.data.tag.CompoundData;
 import fi.dy.masa.servux.util.data.tag.ListData;
+import fi.dy.masa.servux.util.data.tag.StringData;
 import fi.dy.masa.servux.util.data.tag.converter.DataConverterNbt;
 import fi.dy.masa.servux.util.data.tag.util.DataOps;
 import fi.dy.masa.servux.util.data.tag.util.DataTypeUtils;
@@ -65,20 +73,28 @@ public class LitematicsDataProvider extends DataProviderBase
 	private final ServuxIntSetting permissionLevel = new ServuxIntSetting(this, "permission_level", 0, 4, 0);
 	private final ServuxIntSetting pastePermissionLevel = new ServuxIntSetting(this, "permission_level_paste", 0, 4, 0);
 	private final ServuxIntSetting taskPermissionLevel = new ServuxIntSetting(this, "permission_level_tasks", 0, 4, 0);
+	private final ServuxIntSetting verifyPermissionLevel = new ServuxIntSetting(this, "permission_level_verify", 0, 4, 0);
 	private final ServuxBoolSetting playerTaskFeedback = new ServuxBoolSetting(this, "player_task_feedback", false);
 	public final ServuxBoolSetting fixRaiLRotations = new ServuxBoolSetting(this, "fix_rail_rotations", true);
 	public final ServuxBoolSetting fixStairMirror = new ServuxBoolSetting(this, "fix_stairs_mirror", true);
 	public final ServuxBoolSetting fixChestMirror = new ServuxBoolSetting(this, "fix_chest_mirror", true);
 	public final ServuxBoolSetting deDuplicateSchematicEntities = new ServuxBoolSetting(this, "deduplicate_schematic_entities", false);
+	public final ServuxIntSetting verifyMaxResultPositions = new ServuxIntSetting(this, "verify_max_result_positions", 200000, 10000000, 0);
+	public final ServuxIntSetting verifySessionTimeout = new ServuxIntSetting(this, "verify_session_timeout", 300, 86400, 0);
+	public final ServuxBoolSetting verifySyncmaticaInterop = new ServuxBoolSetting(this, "verify_syncmatica_interop", true);
 	private final List<IServuxSetting<?>> settings = List.of(
 			this.permissionLevel,
 			this.pastePermissionLevel,
 			this.taskPermissionLevel,
+			this.verifyPermissionLevel,
 			this.playerTaskFeedback,
 			this.fixRaiLRotations,
 			this.fixStairMirror,
 			this.fixChestMirror,
-			this.deDuplicateSchematicEntities
+			this.deDuplicateSchematicEntities,
+			this.verifyMaxResultPositions,
+			this.verifySessionTimeout,
+			this.verifySyncmaticaInterop
 	);
 
 	private final List<UUID> registeredPlayers = new ArrayList<>();
@@ -98,6 +114,13 @@ public class LitematicsDataProvider extends DataProviderBase
 		this.metadata.putString("id", this.getNetworkChannel().toString());
 		this.metadata.putInt("version", this.getProtocolVersion());
 		this.metadata.putString("servux", Reference.MOD_STRING);
+
+		// Capability advertisement, deliberately separate from PROTOCOL_VERSION: bumping the
+		// version would lock out every existing Litematica client, whereas clients that do not
+		// know this key simply ignore it. Clients branch on the capability, not the version.
+		ListData features = new ListData();
+		features.add(new StringData("verify"));
+		this.metadata.put("Features", features);
 
 		// Litematic-Transmit Dir
 		this.transmitDir = this.getTransmitDir();
@@ -754,6 +777,123 @@ public class LitematicsDataProvider extends DataProviderBase
 		}
 	}
 
+	/**
+	 * Starts a server side verification of the given placement.
+	 * <p>
+	 * Verification is read-only, so unlike a paste it neither requires creative mode nor
+	 * touches the world. Chunks that are not loaded are reported rather than force-loaded.
+	 *
+	 * @param owner      the requester, used to enforce one running session each
+	 * @param source     the command source to report back to, or null for a packet request
+	 * @param onComplete run on the server thread when the session ends; defaults to
+	 *                   sending the summary to the requester
+	 * @return the new session, or null if the requester already has one running
+	 */
+	@Nullable
+	public VerifySession startVerify(ServerLevel level,
+	                                 SchematicPlacement placement,
+	                                 @Nullable LayerRange layerRange,
+	                                 UUID owner,
+	                                 @Nullable CommandSourceStack source,
+	                                 @Nullable Consumer<VerifySession> onComplete)
+	{
+		VerifyResult result = new VerifyResult(this.verifyMaxResultPositions.getValue());
+		VerifySession session = new VerifySession(UUID.randomUUID(), owner, placement.getName(),
+		                                          level.dimension().identifier().toString(), result, source);
+
+		if (!VerifySessionManager.INSTANCE.add(session, this.verifySessionTimeout.getValue()))
+		{
+			return null;
+		}
+
+		ServerPlayer player = source != null ? source.getPlayer() : null;
+		TaskContext ctx = new TaskContext(level.getServer(), level, player, placement.getName(), System.currentTimeMillis());
+
+		// A layer range only takes effect when the behavior asks for it; see shouldPasteBlock()
+		PasteLayerBehavior layerBehavior = layerRange != null ? PasteLayerBehavior.RENDERED_ONLY : PasteLayerBehavior.ALL;
+
+		TaskVerifySchematicPerChunk task = new TaskVerifySchematicPerChunk(
+				ctx, Collections.singletonList(placement), layerRange, layerBehavior, result, null);
+
+		task.setOnComplete(() ->
+		                   {
+			                   // A cancel already moved the session out of RUNNING
+			                   if (session.isRunning())
+			                   {
+				                   session.setState(VerifySession.State.DONE);
+			                   }
+
+			                   session.touch();
+
+			                   if (onComplete != null)
+			                   {
+				                   onComplete.accept(session);
+			                   }
+			                   else
+			                   {
+				                   VerifyReport.summary(session).forEach(session::sendMessage);
+			                   }
+		                   });
+
+		session.setTask(task);
+		TaskScheduler.getInstance().scheduleTask(task, 1);
+
+		Servux.debugLog("litematic_data: started verify session {} for placement '{}'", session.getSessionId(), placement.getName());
+
+		return session;
+	}
+
+	/**
+	 * Handles an inline {@code LitematicaVerify} request, i.e. a client that uploaded the
+	 * schematic along with the placement.
+	 * <p>
+	 * The result currently goes back as chat only; streaming it over the task response
+	 * packets is the next step, and is gated behind the {@code verify} feature flag so
+	 * that clients know whether to expect it.
+	 */
+	public void handleClientVerifyRequest(ServerPlayer player, CompoundData tags)
+	{
+		if (!this.isPlayerRegistered(player) || !this.isEnabled() || tags == null || tags.isEmpty())
+		{
+			return;
+		}
+
+		if (!this.hasPermissionsForVerify(player))
+		{
+			Servux.debugLog("litematic_data: Denying Litematic Verify for player {}, Insufficient Permissions.", player.getName().tryCollapseToString());
+			player.sendSystemMessage(StringUtils.translate("servux.litematics.error.insufficent_for_verify"));
+			return;
+		}
+
+		SchematicPlacement placement;
+
+		try
+		{
+			// createFromData() rethrows parse failures as unchecked, and this runs off a
+			// packet, so a malformed payload must not escape into the network thread
+			placement = SchematicPlacement.createFromData(tags);
+		}
+		catch (Exception e)
+		{
+			Servux.LOGGER.warn("litematic_data: failed to read the verify placement from player {}; {}", player.getName().tryCollapseToString(), e.getLocalizedMessage());
+			placement = null;
+		}
+
+		if (placement == null)
+		{
+			player.sendSystemMessage(StringUtils.translate("servux.litematics.verify.error.bad_placement"));
+			return;
+		}
+
+		LayerRange layerRange = tags.getCodec("RenderLayerRange", LayerRange.CODEC).orElse(null);
+		VerifySession session = this.startVerify(player.level(), placement, layerRange, player.getUUID(), null, null);
+
+		if (session == null)
+		{
+			player.sendSystemMessage(StringUtils.translate("servux.litematics.verify.error.already_running"));
+		}
+	}
+
 	@Override
 	public boolean hasPermission(ServerPlayer player)
 	{
@@ -768,6 +908,21 @@ public class LitematicsDataProvider extends DataProviderBase
 	public boolean hasPermissionsForTask(ServerPlayer player, String task)
 	{
 		return this.hasPermission(player) && PermissionsUtil.check(player, this.permNode + ".task." + task, this.taskPermissionLevel.getValue());
+	}
+
+	public boolean hasPermissionsForVerify(ServerPlayer player)
+	{
+		return this.hasPermission(player) && PermissionsUtil.check(player, this.permNode + ".verify", this.verifyPermissionLevel.getValue());
+	}
+
+	public boolean isSyncmaticaInteropEnabled()
+	{
+		return this.verifySyncmaticaInterop.getValue();
+	}
+
+	public int getVerifySessionTimeout()
+	{
+		return this.verifySessionTimeout.getValue();
 	}
 
 	public boolean shouldSendPlayerTaskFeedback()
