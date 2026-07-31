@@ -76,7 +76,8 @@ public class LayerRange
     protected boolean hotkeyRangeMin;
     protected boolean hotkeyRangeMax;
 
-    private LayerRange() { }
+    // Public on the 26.1+ branch, where the Task Scheduler constructs an unrestricted range
+    public LayerRange() { }
 
     private LayerRange(LayerMode mode, Axis axis, int single, int above, int below, int min, int max, boolean minRange, boolean maxRange)
     {

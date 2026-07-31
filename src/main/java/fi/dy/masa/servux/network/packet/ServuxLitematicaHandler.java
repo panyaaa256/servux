@@ -133,9 +133,13 @@ public abstract class ServuxLitematicaHandler<T extends CustomPacketPayload> imp
         String task = nbt.getStringOr("Task", "LitematicaPaste");
         Servux.debugLog("handleBulkData: received task: {} from {}", task, player.getName().getString());
 
-        // For future Granular Task Management
-//        switch (task)
-//        {
+        // The Task string used to be read but never branched on, which routed every bulk
+        // C2S payload into the paste handler regardless of what it actually asked for.
+        switch (task)
+        {
+            case "LitematicaVerify" -> LitematicsDataProvider.INSTANCE.handleClientVerifyRequest(player, type, nbt);
+
+            // For future Granular Task Management
 //            // File-Transmit support
 //            case "Litematic-TransmitStart", "Litematic-TransmitCancel", "Litematic-TransmitData", "Litematic-TransmitEnd" ->
 //            {
@@ -147,10 +151,9 @@ public abstract class ServuxLitematicaHandler<T extends CustomPacketPayload> imp
 //                    LitematicsDataProvider.INSTANCE.handleClientPasteRequestPair(player, type, schemPair);
 //                }
 //            }
-//            default -> LitematicsDataProvider.INSTANCE.handleClientPasteRequest(player, type, nbt);
-//        }
 
-        LitematicsDataProvider.INSTANCE.handleClientPasteRequest(player, type, nbt);
+            default -> LitematicsDataProvider.INSTANCE.handleClientPasteRequest(player, type, nbt);
+        }
     }
 
     @Override
