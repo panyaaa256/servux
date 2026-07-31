@@ -38,6 +38,7 @@ public class VerifyResult
 	private int totalChunks;
 	private int processedChunks;
 	private int unloadedChunks;
+	private int ungeneratedChunks;
 	private int storedPositions;
 	private boolean truncated;
 
@@ -179,6 +180,26 @@ public class VerifyResult
 		this.unloadedChunks = unloadedChunks;
 	}
 
+	/**
+	 * Chunks the placement covers that have never been generated. These are skipped
+	 * rather than generated, so that inspecting a build never enlarges the world.
+	 */
+	public int getUngeneratedChunks()
+	{
+		return this.ungeneratedChunks;
+	}
+
+	public void addUngeneratedChunk()
+	{
+		this.ungeneratedChunks++;
+	}
+
+	/** Chunks that were not read for any reason, whether unloaded or never generated. */
+	public int getSkippedChunks()
+	{
+		return this.unloadedChunks + this.ungeneratedChunks;
+	}
+
 	/** True when the position lists were capped and do not hold every mismatch position. */
 	public boolean isTruncated()
 	{
@@ -187,6 +208,6 @@ public class VerifyResult
 
 	public boolean isPerfectMatch()
 	{
-		return this.getTotalMismatches() == 0 && this.unloadedChunks == 0;
+		return this.getTotalMismatches() == 0 && this.getSkippedChunks() == 0;
 	}
 }

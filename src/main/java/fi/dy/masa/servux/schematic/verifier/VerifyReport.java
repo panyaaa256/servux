@@ -55,7 +55,8 @@ public class VerifyReport
 		lines.add(StringUtils.translate("servux.litematics.verify.summary.chunks",
 		                                result.getProcessedChunks(),
 		                                result.getTotalChunks(),
-		                                result.getUnloadedChunks()));
+		                                result.getUnloadedChunks(),
+		                                result.getUngeneratedChunks()));
 
 		if (result.getTotalMismatches() == 0)
 		{
@@ -86,6 +87,12 @@ public class VerifyReport
 		if (result.getUnloadedChunks() > 0)
 		{
 			lines.add(StringUtils.translate("servux.litematics.verify.summary.unloaded_warning", result.getUnloadedChunks())
+					          .withStyle(ChatFormatting.YELLOW));
+		}
+
+		if (result.getUngeneratedChunks() > 0)
+		{
+			lines.add(StringUtils.translate("servux.litematics.verify.summary.ungenerated_warning", result.getUngeneratedChunks())
 					          .withStyle(ChatFormatting.YELLOW));
 		}
 

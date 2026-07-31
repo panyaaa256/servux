@@ -2,6 +2,7 @@ package fi.dy.masa.servux.scheduler.tasks;
 
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.List;
 import java.util.Set;
 import javax.annotation.Nullable;
 import com.google.common.collect.ArrayListMultimap;
@@ -14,6 +15,8 @@ import net.minecraft.world.level.ChunkPos;
 
 import fi.dy.masa.servux.scheduler.TaskContext;
 import fi.dy.masa.servux.schematic.placement.SchematicPlacement;
+import fi.dy.masa.servux.schematic.verifier.VerifyChunkLoader;
+import fi.dy.masa.servux.schematic.verifier.VerifyNbtComparator;
 import fi.dy.masa.servux.schematic.verifier.VerifyResult;
 import fi.dy.masa.servux.util.IntBoundingBox;
 import fi.dy.masa.servux.util.LayerRange;
@@ -44,14 +47,26 @@ public class TaskVerifySchematicPerChunk extends TaskProcessChunkBase
 	 */
 	private static final int STUCK_TICK_LIMIT = 100;
 
+	/**
+	 * Upper bound on time spent waiting on chunk loads or on the TPS backoff, so that a
+	 * permanently overloaded server ends the verification instead of stranding it. Five
+	 * minutes at 20 ticks per second.
+	 */
+	private static final int WAITING_TICK_LIMIT = 6000;
+
 	protected final ImmutableList<SchematicPlacement> placements;
 	protected final LayerRange layerRange;
 	protected final PasteLayerBehavior layerBehavior;
 
 	private final ArrayListMultimap<ChunkPos, SchematicPlacement> placementsPerChunk = ArrayListMultimap.create();
 	private final VerifyResult result;
+	@Nullable private final VerifyChunkLoader chunkLoader;
+	@Nullable private final VerifyNbtComparator nbtComparator;
+	private final int pauseMsptThreshold;
+	private final List<ChunkPos> ungenerated = new ArrayList<>();
 	@Nullable private Runnable onComplete;
 	private int stuckTicks;
+	private int waitingTicks;
 	private boolean cancelled;
 
 	public TaskVerifySchematicPerChunk(TaskContext context,
@@ -59,6 +74,9 @@ public class TaskVerifySchematicPerChunk extends TaskProcessChunkBase
 	                                   @Nullable LayerRange range,
 	                                   PasteLayerBehavior layerBehavior,
 	                                   VerifyResult result,
+	                                   @Nullable VerifyChunkLoader chunkLoader,
+	                                   @Nullable VerifyNbtComparator nbtComparator,
+	                                   int pauseMsptThreshold,
 	                                   @Nullable Runnable onComplete)
 	{
 		super(context);
@@ -67,6 +85,9 @@ public class TaskVerifySchematicPerChunk extends TaskProcessChunkBase
 		this.layerRange = range != null ? range : new LayerRange();
 		this.layerBehavior = layerBehavior;
 		this.result = result;
+		this.chunkLoader = chunkLoader;
+		this.nbtComparator = nbtComparator;
+		this.pauseMsptThreshold = pauseMsptThreshold;
 		this.onComplete = onComplete;
 		this.name = "verify";
 	}
@@ -153,7 +174,42 @@ public class TaskVerifySchematicPerChunk extends TaskProcessChunkBase
 	@Override
 	protected boolean canProcessChunk(ChunkPos pos)
 	{
-		return this.isServerChunkLoaded(this.context.world(), pos.x, pos.z);
+		if (this.isServerChunkLoaded(this.context.world(), pos.x, pos.z))
+		{
+			return true;
+		}
+
+		if (this.chunkLoader == null)
+		{
+			return false;
+		}
+
+		// With force loading on, this also drives the load: it asks the loader to bring
+		// the chunk in and reports READY only once it is actually readable, so the caller
+		// reads it during the very tick it became available.
+		VerifyChunkLoader.Result result = this.chunkLoader.request(pos);
+
+		if (result == VerifyChunkLoader.Result.UNGENERATED)
+		{
+			// Nothing to compare against, and generating it is not on the table
+			this.ungenerated.add(pos);
+		}
+
+		return result == VerifyChunkLoader.Result.READY;
+	}
+
+	/**
+	 * True while the server is running hot enough that we should stop pulling new chunks
+	 * in. Already loaded chunks keep being verified; only the extra I/O is paused.
+	 */
+	private boolean shouldPauseForTps(MinecraftServer server)
+	{
+		if (this.pauseMsptThreshold <= 0)
+		{
+			return false;
+		}
+
+		return (server.getAverageTickTimeNanos() / 1_000_000.0D) > this.pauseMsptThreshold;
 	}
 
 	@Override
@@ -173,6 +229,17 @@ public class TaskVerifySchematicPerChunk extends TaskProcessChunkBase
 		final long timeStart = Util.getNanos();
 		boolean budgetExhausted = false;
 		int processedThisTick = 0;
+
+		// Back off from issuing new loads while the server is struggling; verification is
+		// never urgent enough to compete with the players on it. Chunks that are already
+		// in memory keep being verified, only the extra I/O pauses. Without a loader there
+		// is no I/O to pause, so the threshold does not apply at all.
+		final boolean paused = this.chunkLoader != null && this.shouldPauseForTps(server);
+
+		if (this.chunkLoader != null)
+		{
+			this.chunkLoader.startTick(!paused);
+		}
 
 		this.sortChunkList();
 
@@ -201,6 +268,24 @@ public class TaskVerifySchematicPerChunk extends TaskProcessChunkBase
 			profiler.pop();
 		}
 
+		// Chunks that turned out never to have been generated: there is nothing to compare
+		// against, and generating them is exactly what this must not do.
+		if (!this.ungenerated.isEmpty())
+		{
+			for (ChunkPos pos : this.ungenerated)
+			{
+				if (this.pendingChunks.remove(pos))
+				{
+					this.result.addUngeneratedChunk();
+				}
+
+				// Drop any ticket taken before we found out it was a dead end
+				this.chunkLoader.release(pos);
+			}
+
+			this.ungenerated.clear();
+		}
+
 		if (this.pendingChunks.isEmpty())
 		{
 			this.finished = true;
@@ -209,22 +294,43 @@ public class TaskVerifySchematicPerChunk extends TaskProcessChunkBase
 		}
 
 		// Nothing left to wait for: the remaining chunks are not loaded and nobody is
-		// loading them. Report them instead of spinning forever.
+		// loading them. Report them instead of spinning forever. A tick spent waiting on
+		// the TPS backoff or on an in-flight load is progress, not a stall - but the wait
+		// is still bounded, so a permanently overloaded server cannot strand the task.
+		boolean waiting = paused || (this.chunkLoader != null && this.chunkLoader.getPendingRequests() > 0);
+
 		if (processedThisTick > 0 || budgetExhausted)
 		{
 			this.stuckTicks = 0;
+			this.waitingTicks = 0;
+		}
+		else if (waiting)
+		{
+			this.stuckTicks = 0;
+
+			if (++this.waitingTicks > WAITING_TICK_LIMIT)
+			{
+				return this.giveUp(profiler);
+			}
 		}
 		else if (++this.stuckTicks > STUCK_TICK_LIMIT)
 		{
-			this.result.setUnloadedChunks(this.pendingChunks.size());
-			this.pendingChunks.clear();
-			this.finished = true;
-			profiler.pop();
-			return true;
+			return this.giveUp(profiler);
 		}
 
 		profiler.pop();
 		return false;
+	}
+
+	/** Stops early, reporting whatever is left as unread rather than spinning on it. */
+	private boolean giveUp(ProfilerFiller profiler)
+	{
+		this.result.setUnloadedChunks(this.pendingChunks.size());
+		this.pendingChunks.clear();
+		this.finished = true;
+		profiler.pop();
+
+		return true;
 	}
 
 	@Override
@@ -236,12 +342,19 @@ public class TaskVerifySchematicPerChunk extends TaskProcessChunkBase
 		for (SchematicPlacement placement : placements)
 		{
 			SchematicVerifyUtils.verifyWorldWithinChunk(this.context.world(), pos, placement,
-			                                            this.layerBehavior, this.layerRange, this.result);
+			                                            this.layerBehavior, this.layerRange,
+			                                            this.result, this.nbtComparator);
 
 			this.placementsPerChunk.remove(pos, placement);
 		}
 
 		this.result.addProcessedChunk();
+
+		// Read and done: let go of the chunk so it can unload again
+		if (this.chunkLoader != null)
+		{
+			this.chunkLoader.release(pos);
+		}
 
 		return this.placementsPerChunk.containsKey(pos) == false;
 	}
@@ -253,6 +366,12 @@ public class TaskVerifySchematicPerChunk extends TaskProcessChunkBase
 		{
 			// Aborted for a reason other than an explicit cancel (world unloaded, etc.)
 			this.result.setUnloadedChunks(this.pendingChunks.size());
+		}
+
+		// However this task ended, it must not leave tickets behind holding chunks in memory
+		if (this.chunkLoader != null)
+		{
+			this.chunkLoader.releaseAll();
 		}
 
 		// onStop() is already dispatched onto the server thread by the base class
