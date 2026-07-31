@@ -920,11 +920,6 @@ public class LitematicsDataProvider extends DataProviderBase
 		return this.verifySyncmaticaInterop.getValue();
 	}
 
-	public int getVerifySessionTimeout()
-	{
-		return this.verifySessionTimeout.getValue();
-	}
-
 	public boolean shouldSendPlayerTaskFeedback()
 	{
 		return this.playerTaskFeedback.getValue();
