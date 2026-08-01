@@ -74,8 +74,9 @@ public abstract class ServuxLitematicaHandler<T extends CustomPacketPayload> imp
     {
         ServuxLitematicaPacket packet = (ServuxLitematicaPacket) data;
 
-        if (!channel.equals(CHANNEL_ID))
+        if (!channel.equals(CHANNEL_ID) || packet == null)
         {
+            // A null packet means the type was unknown to us; already logged and drained
             return;
         }
         switch (packet.getType())
