@@ -102,9 +102,8 @@ public abstract class ServuxLitematicaHandler<T extends CustomPacketPayload> imp
 						LitematicsDataProvider.INSTANCE.unregister(player, packet.getCompound());
 				case PACKET_C2S_TASK_REQUEST ->
 						LitematicsDataProvider.INSTANCE.onTaskRequest(player, packet.getCompound());
-				// TODO
-//				case PACKET_C2S_TASK_CANCEL ->
-//						LitematicsDataProvider.INSTANCE.onTaskCancel(player, packet.getCompound());
+				case PACKET_C2S_TASK_CANCEL ->
+						LitematicsDataProvider.INSTANCE.onTaskCancel(player, packet.getCompound());
 				case PACKET_C2S_BLOCK_ENTITY_REQUEST ->
 						LitematicsDataProvider.INSTANCE.onBlockEntityRequest(player, packet.getPos(), packet.getCompound());
 				case PACKET_C2S_ENTITY_REQUEST ->

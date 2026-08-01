@@ -80,6 +80,8 @@
     "servux.config.litematic_data.permission_level_verify.name": "Verify Permission Level",
     "servux.config.litematic_data.player_task_feedback.comment": "Enable / Disable Servux sending the players Litematic task feedback messages",
     "servux.config.litematic_data.player_task_feedback.name": "Player Task Feedback",
+    "servux.config.litematic_data.verify_batch_positions.comment": "How many mismatch positions to put in each result batch sent to a client. The client acknowledges each batch before the next is produced, so a large result crosses the wire a bounded amount at a time",
+    "servux.config.litematic_data.verify_batch_positions.name": "Verify Batch Positions",
     "servux.config.litematic_data.verify_force_load_chunks.comment": "Load chunks that a verification needs but that are not in memory. Loading is non-blocking and the chunks are loaded but not ticked, so no mobs spawn and no redstone runs in them. Disable to only verify what happens to be loaded already",
     "servux.config.litematic_data.verify_force_load_chunks.name": "Verify Force Load Chunks",
     "servux.config.litematic_data.verify_generate_missing_chunks.comment": "Generate terrain for chunks a placement covers that have never been generated. §6Off by default: this permanently enlarges the world as a side effect of merely inspecting it, and world gen is far too slow to fit the per-tick budget§r. When off, such chunks are reported as ungenerated instead",

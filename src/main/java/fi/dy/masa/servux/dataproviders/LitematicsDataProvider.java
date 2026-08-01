@@ -45,6 +45,7 @@ import fi.dy.masa.servux.schematic.verifier.VerifyChunkLoader;
 import fi.dy.masa.servux.schematic.verifier.VerifyNbtComparator;
 import fi.dy.masa.servux.schematic.verifier.VerifyReport;
 import fi.dy.masa.servux.schematic.verifier.VerifyResult;
+import fi.dy.masa.servux.schematic.verifier.VerifyResultSerializer;
 import fi.dy.masa.servux.schematic.verifier.VerifySession;
 import fi.dy.masa.servux.schematic.verifier.VerifySessionManager;
 import fi.dy.masa.servux.settings.IServuxSetting;
@@ -82,6 +83,7 @@ public class LitematicsDataProvider extends DataProviderBase
 	public final ServuxBoolSetting fixChestMirror = new ServuxBoolSetting(this, "fix_chest_mirror", true);
 	public final ServuxBoolSetting deDuplicateSchematicEntities = new ServuxBoolSetting(this, "deduplicate_schematic_entities", false);
 	public final ServuxIntSetting verifyMaxResultPositions = new ServuxIntSetting(this, "verify_max_result_positions", 200000, 10000000, 0);
+	public final ServuxIntSetting verifyBatchPositions = new ServuxIntSetting(this, "verify_batch_positions", 16384, 262144, 256);
 	public final ServuxIntSetting verifySessionTimeout = new ServuxIntSetting(this, "verify_session_timeout", 300, 86400, 0);
 	public final ServuxBoolSetting verifySyncmaticaInterop = new ServuxBoolSetting(this, "verify_syncmatica_interop", true);
 	public final ServuxBoolSetting verifyForceLoadChunks = new ServuxBoolSetting(this, "verify_force_load_chunks", true);
@@ -102,6 +104,7 @@ public class LitematicsDataProvider extends DataProviderBase
 			this.fixChestMirror,
 			this.deDuplicateSchematicEntities,
 			this.verifyMaxResultPositions,
+			this.verifyBatchPositions,
 			this.verifySessionTimeout,
 			this.verifySyncmaticaInterop,
 			this.verifyForceLoadChunks,
@@ -310,19 +313,16 @@ public class LitematicsDataProvider extends DataProviderBase
 		this.invalidPlayers.remove(player.getUUID());
 	}
 
+	/**
+	 * Handles the C2S task requests, including the small control messages that drive
+	 * the verify result stream: the batch acknowledgements that pull the next batch
+	 * out of the server.
+	 */
 	@ApiStatus.Experimental
 	public void onTaskRequest(ServerPlayer player, CompoundData tags)
 	{
 		if (!this.isPlayerRegistered(player) || !this.isEnabled() || tags == null || tags.isEmpty())
 		{
-			return;
-		}
-
-		if (!this.hasPermission(player))
-		{
-			Servux.debugLog("litematic_data: Denying onTaskRequest from player {}, Insufficient Permissions.", player.getName().getString());
-			player.sendSystemMessage(StringUtils.translate("servux.litematics.error.insufficent_for_tasks"));
-
 			return;
 		}
 
@@ -333,6 +333,28 @@ public class LitematicsDataProvider extends DataProviderBase
 
 		switch (taskType)
 		{
+			case "LitematicaVerifyAck" ->
+			{
+				if (!this.hasPermissionsForVerify(player))
+				{
+					Servux.debugLog("litematic_data: Denying onTaskRequest from player {}, Insufficient Permissions for Verify Task.", player.getName().getString());
+					player.sendSystemMessage(StringUtils.translate("servux.litematics.error.insufficent_for_verify"));
+
+					return;
+				}
+
+				VerifySession session = this.getOwnedSession(player, tags);
+
+				if (session == null)
+				{
+					return;
+				}
+
+				// -1 rather than getInt()'s 0, so that "absent" stays distinguishable from batch 0
+				session.setAcknowledgedBatch(tags.contains("Batch", Constants.NBT.TAG_INT) ? tags.getInt("Batch") : -1);
+				this.sendNextVerifyBatch(player, session);
+			}
+
 			case "Fill" ->
 			{
 				if (!this.hasPermissionsForTask(player, "fill"))
@@ -494,6 +516,7 @@ public class LitematicsDataProvider extends DataProviderBase
 		HANDLER.encodeServerData(player, ServuxLitematicaPacket.TaskStatusSync(tags));
 	}
 
+	/** Handles a client asking to abandon its verification. */
 	@ApiStatus.Experimental
 	public void onTaskCancel(ServerPlayer player, CompoundData tags)
 	{
@@ -502,13 +525,132 @@ public class LitematicsDataProvider extends DataProviderBase
 			return;
 		}
 
-		if (!this.hasPermission(player))
+		if (!this.hasPermissionsForVerify(player))
 		{
 			Servux.debugLog("litematic_data: Denying onTaskCancel from player {}, Insufficient Permissions.", player.getName().getString());
 			return;
 		}
 
-		// TODO (For things like Delete, Fill, etc)
+		if (!tags.getString("Task").equals("LitematicaVerifyCancel"))
+		{
+			// TODO (For things like Delete, Fill, etc)
+			return;
+		}
+
+		VerifySession session = this.getOwnedSession(player, tags);
+
+		if (session != null)
+		{
+			Servux.debugLog("litematic_data: verify session {} cancelled by the client", session.getSessionId());
+			session.cancel();
+			VerifySessionManager.INSTANCE.remove(session.getSessionId());
+		}
+	}
+
+	/**
+	 * Looks a session up and checks it belongs to the asking player, so that one client
+	 * cannot drive or cancel another's verification.
+	 */
+	@Nullable
+	private VerifySession getOwnedSession(ServerPlayer player, CompoundData tags)
+	{
+		UUID sessionId = VerifyResultSerializer.uuidFromIntArray(tags.getIntArray("SessionId"));
+
+		if (sessionId == null)
+		{
+			return null;
+		}
+
+		VerifySession session = VerifySessionManager.INSTANCE.get(sessionId);
+
+		return session != null && session.getOwner().equals(player.getUUID()) ? session : null;
+	}
+
+	/** Called when verification finishes: switches the session over to handing out batches. */
+	private void beginStreaming(VerifySession session)
+	{
+		ServerPlayer player = session.getPlayer();
+
+		if (player == null)
+		{
+			// The requester left; nothing to stream to
+			VerifySessionManager.INSTANCE.remove(session.getSessionId());
+			return;
+		}
+
+		if (session.getState() == VerifySession.State.CANCELLED)
+		{
+			VerifySessionManager.INSTANCE.remove(session.getSessionId());
+			return;
+		}
+
+		session.setSerializer(new VerifyResultSerializer(session.getResult()));
+		session.setState(VerifySession.State.STREAMING);
+
+		this.sendNextVerifyBatch(player, session);
+	}
+
+	/**
+	 * Sends one result batch. The client acknowledges it and that pulls the next one, so
+	 * a result of any size crosses the wire a bounded amount at a time and a client that
+	 * stops responding simply stops the flow (and is eventually reaped by the timeout).
+	 */
+	private void sendNextVerifyBatch(ServerPlayer player, VerifySession session)
+	{
+		VerifyResultSerializer serializer = session.getSerializer();
+
+		if (serializer == null || session.getState() != VerifySession.State.STREAMING)
+		{
+			return;
+		}
+
+		if (!serializer.hasMore() && serializer.getBatchNumber() > 0)
+		{
+			// The final batch has been acknowledged; the session has served its purpose
+			session.setState(VerifySession.State.DONE);
+			VerifySessionManager.INSTANCE.remove(session.getSessionId());
+			return;
+		}
+
+		CompoundData batch = serializer.nextBatch(this.verifyBatchPositions.getValue(), session.getSessionId());
+
+		HANDLER.encodeServerData(player, ServuxLitematicaPacket.ResponseS2CStart(batch));
+	}
+
+	/** Progress ping, so the client's verifier GUI can show something while it waits. */
+	public void sendVerifyStatus(VerifySession session)
+	{
+		ServerPlayer player = session.getPlayer();
+
+		if (player == null)
+		{
+			return;
+		}
+
+		CompoundData tag = new CompoundData();
+		tag.putString("Task", "LitematicaVerifyStatus");
+		tag.putIntArray("SessionId", VerifyResultSerializer.uuidToIntArray(session.getSessionId()));
+		tag.putInt("ChunksDone", session.getResult().getProcessedChunks());
+		tag.putInt("ChunksTotal", session.getResult().getTotalChunks());
+		tag.putInt("Mismatches", session.getResult().getTotalMismatches());
+
+		HANDLER.encodeServerData(player, ServuxLitematicaPacket.TaskStatusSync(tag));
+	}
+
+	/** Reports a failure as a translation key, so the client renders it in its own language. */
+	private void sendVerifyError(ServerPlayer player, @Nullable int[] sessionId, String key)
+	{
+		CompoundData tag = new CompoundData();
+		tag.putString("Task", "LitematicaVerifyError");
+
+		if (sessionId != null && sessionId.length == 4)
+		{
+			tag.putIntArray("SessionId", sessionId);
+		}
+
+		tag.putString("Key", key);
+
+		HANDLER.encodeServerData(player, ServuxLitematicaPacket.TaskResponse(tag));
 	}
 
 	public void onBlockEntityRequest(ServerPlayer player, BlockPos pos, @Nullable CompoundData tags)
@@ -814,9 +956,25 @@ public class LitematicsDataProvider extends DataProviderBase
 	                                 @Nullable CommandSourceStack source,
 	                                 @Nullable Consumer<VerifySession> onComplete)
 	{
+		return this.startVerify(level, placement, layerRange, owner, source, null, onComplete);
+	}
+
+	/**
+	 * @param sessionId the id to run under, or null to mint one. A packet driven request
+	 *                  supplies its own so it can match the replies to its request.
+	 */
+	@Nullable
+	public VerifySession startVerify(ServerLevel level,
+	                                 SchematicPlacement placement,
+	                                 @Nullable LayerRange layerRange,
+	                                 UUID owner,
+	                                 @Nullable CommandSourceStack source,
+	                                 @Nullable UUID sessionId,
+	                                 @Nullable Consumer<VerifySession> onComplete)
+	{
 		VerifyResult result = new VerifyResult(this.verifyMaxResultPositions.getValue());
-		VerifySession session = new VerifySession(UUID.randomUUID(), owner, placement.getName(),
-		                                          level.dimension().identifier().toString(), result, source);
+		VerifySession session = new VerifySession(sessionId != null ? sessionId : UUID.randomUUID(),
+		                                          owner, placement.getName(), level, result, source);
 
 		if (!VerifySessionManager.INSTANCE.add(session, this.verifySessionTimeout.getValue()))
 		{
@@ -843,6 +1001,8 @@ public class LitematicsDataProvider extends DataProviderBase
 		TaskVerifySchematicPerChunk task = new TaskVerifySchematicPerChunk(
 				ctx, Collections.singletonList(placement), layerRange, layerBehavior, result,
 				chunkLoader, nbtComparator, this.verifyPauseMsptThreshold.getValue(), null);
+
+		task.setOnProgress(() -> this.sendVerifyStatus(session));
 
 		task.setOnComplete(() ->
 		                   {
@@ -876,9 +1036,9 @@ public class LitematicsDataProvider extends DataProviderBase
 	 * Handles an inline {@code LitematicaVerify} request, i.e. a client that uploaded the
 	 * schematic along with the placement.
 	 * <p>
-	 * The result currently goes back as chat only; streaming it over the task response
-	 * packets is the next step, and is gated behind the {@code verify} feature flag so
-	 * that clients know whether to expect it.
+	 * The result is streamed back in acknowledged batches; see
+	 * {@link #sendNextVerifyBatch}. Clients learn that this exists from the {@code verify}
+	 * entry in the {@code Features} metadata list, not from the protocol version.
 	 */
 	public void handleClientVerifyRequest(ServerPlayer player, CompoundData tags)
 	{
@@ -890,7 +1050,7 @@ public class LitematicsDataProvider extends DataProviderBase
 		if (!this.hasPermissionsForVerify(player))
 		{
 			Servux.debugLog("litematic_data: Denying Litematic Verify for player {}, Insufficient Permissions.", player.getName().tryCollapseToString());
-			player.sendSystemMessage(StringUtils.translate("servux.litematics.error.insufficent_for_verify"));
+			this.sendVerifyError(player, tags.getIntArray("SessionId"), "servux.litematics.error.insufficent_for_verify");
 			return;
 		}
 
@@ -908,18 +1068,25 @@ public class LitematicsDataProvider extends DataProviderBase
 			placement = null;
 		}
 
+		int[] sessionIdArray = tags.getIntArray("SessionId");
+
 		if (placement == null)
 		{
-			player.sendSystemMessage(StringUtils.translate("servux.litematics.verify.error.bad_placement"));
+			this.sendVerifyError(player, sessionIdArray, "servux.litematics.verify.error.bad_placement");
 			return;
 		}
 
 		LayerRange layerRange = tags.getCodec("RenderLayerRange", LayerRange.CODEC).orElse(null);
-		VerifySession session = this.startVerify(player.level(), placement, layerRange, player.getUUID(), null, null);
+
+		// The client picks the session id so that it can match replies to its own request
+		UUID sessionId = VerifyResultSerializer.uuidFromIntArray(sessionIdArray);
+
+		VerifySession session = this.startVerify(player.level(), placement, layerRange, player.getUUID(), null,
+		                                         sessionId, this::beginStreaming);
 
 		if (session == null)
 		{
-			player.sendSystemMessage(StringUtils.translate("servux.litematics.verify.error.already_running"));
+			this.sendVerifyError(player, sessionIdArray, "servux.litematics.verify.error.already_running");
 		}
 	}
 

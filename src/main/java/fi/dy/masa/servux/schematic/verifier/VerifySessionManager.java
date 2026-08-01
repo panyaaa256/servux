@@ -58,7 +58,7 @@ public class VerifySessionManager
 	{
 		for (VerifySession session : this.sessions.values())
 		{
-			if (session.getOwner().equals(owner) && session.isRunning())
+			if (session.getOwner().equals(owner) && session.isActive())
 			{
 				return session;
 			}
@@ -96,7 +96,7 @@ public class VerifySessionManager
 
 		for (VerifySession session : this.sessions.values())
 		{
-			if (session.isRunning())
+			if (session.isActive())
 			{
 				list.add(session);
 			}
@@ -130,7 +130,7 @@ public class VerifySessionManager
 
 			if (session.getLastActivity() < cutoff)
 			{
-				if (session.isRunning())
+				if (session.isActive())
 				{
 					Servux.debugLog("VerifySessionManager: expiring stale session {}", session.getSessionId());
 					session.cancel();
@@ -145,7 +145,7 @@ public class VerifySessionManager
 	{
 		for (VerifySession session : this.sessions.values())
 		{
-			if (session.isRunning())
+			if (session.isActive())
 			{
 				session.cancel();
 			}
