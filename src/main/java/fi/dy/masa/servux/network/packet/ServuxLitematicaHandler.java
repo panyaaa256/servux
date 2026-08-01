@@ -84,6 +84,8 @@ public abstract class ServuxLitematicaHandler<T extends CustomPacketPayload> imp
             case PACKET_C2S_BLOCK_ENTITY_REQUEST -> LitematicsDataProvider.INSTANCE.onBlockEntityRequest(player, packet.getPos());
             case PACKET_C2S_ENTITY_REQUEST -> LitematicsDataProvider.INSTANCE.onEntityRequest(player, packet.getEntityId());
             case PACKET_C2S_BULK_ENTITY_NBT_REQUEST -> LitematicsDataProvider.INSTANCE.onBulkEntityRequest(player, packet.getChunkPos(), packet.getCompound());
+            case PACKET_C2S_TASK_REQUEST -> LitematicsDataProvider.INSTANCE.onTaskRequest(player, packet.getCompound());
+            case PACKET_C2S_TASK_CANCEL -> LitematicsDataProvider.INSTANCE.onTaskCancel(player, packet.getCompound());
             case PACKET_C2S_NBT_RESPONSE_DATA ->
             {
                 if (!LitematicsDataProvider.INSTANCE.isPlayerRegistered(player)) { return; }

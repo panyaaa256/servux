@@ -54,6 +54,9 @@ public class TaskVerifySchematicPerChunk extends TaskProcessChunkBase
 	 */
 	private static final int WAITING_TICK_LIMIT = 6000;
 
+	/** How often to emit a progress ping, in ticks. */
+	private static final int PROGRESS_TICK_INTERVAL = 20;
+
 	protected final ImmutableList<SchematicPlacement> placements;
 	protected final LayerRange layerRange;
 	protected final PasteLayerBehavior layerBehavior;
@@ -65,6 +68,8 @@ public class TaskVerifySchematicPerChunk extends TaskProcessChunkBase
 	private final int pauseMsptThreshold;
 	private final List<ChunkPos> ungenerated = new ArrayList<>();
 	@Nullable private Runnable onComplete;
+	@Nullable private Runnable onProgress;
+	private int ticksSinceProgress;
 	private int stuckTicks;
 	private int waitingTicks;
 	private boolean cancelled;
@@ -101,6 +106,15 @@ public class TaskVerifySchematicPerChunk extends TaskProcessChunkBase
 	public void setOnComplete(@Nullable Runnable onComplete)
 	{
 		this.onComplete = onComplete;
+	}
+
+	/**
+	 * Runs periodically while the task is working, for progress reporting. Verification of
+	 * a large build takes a while, so the requester needs to see it moving.
+	 */
+	public void setOnProgress(@Nullable Runnable onProgress)
+	{
+		this.onProgress = onProgress;
 	}
 
 	/** Requests that the task stop at the next tick; the partial result is kept. */
@@ -266,6 +280,12 @@ public class TaskVerifySchematicPerChunk extends TaskProcessChunkBase
 			}
 
 			profiler.pop();
+		}
+
+		if (this.onProgress != null && ++this.ticksSinceProgress >= PROGRESS_TICK_INTERVAL)
+		{
+			this.ticksSinceProgress = 0;
+			this.onProgress.run();
 		}
 
 		// Chunks that turned out never to have been generated: there is nothing to compare
