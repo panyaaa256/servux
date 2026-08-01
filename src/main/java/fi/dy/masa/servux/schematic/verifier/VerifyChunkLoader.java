@@ -3,11 +3,11 @@ package fi.dy.masa.servux.schematic.verifier;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
-import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 
-import net.minecraft.nbt.CompoundTag;
+import net.minecraft.nbt.StreamTagVisitor;
+import net.minecraft.nbt.TagType;
 import net.minecraft.server.level.ServerChunkCache;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.TicketType;
@@ -75,13 +75,56 @@ public class VerifyChunkLoader
 	private static final class Request
 	{
 		private Stage stage;
-		private CompletableFuture<Optional<CompoundTag>> probe;
+		private ExistenceProbe probeVisitor;
+		private CompletableFuture<Void> probe;
 		private CompletableFuture<?> load;
 
 		private boolean isDone()
 		{
 			return this.stage == Stage.PROBE ? this.probe.isDone() : this.load.isDone();
 		}
+	}
+
+	/**
+	 * Answers "has this chunk ever been written?" as cheaply as the storage layer allows.
+	 * <p>
+	 * The obvious way to ask is {@code SimpleRegionStorage.read()}, but that decompresses
+	 * and materialises the chunk's entire NBT tree - and it is thrown away immediately,
+	 * only to be read again by the real load. Scanning instead lets the parse stop at the
+	 * root tag: reaching it at all proves the chunk exists, and halting there skips the
+	 * rest. A chunk that was never generated never reaches the visitor.
+	 * <p>
+	 * (The cheapest check of all would be {@code RegionFile.hasChunk()}, a pure offset
+	 * table lookup, but it sits behind three private hops and is only safe on the IO
+	 * worker thread.)
+	 */
+	private static final class ExistenceProbe implements StreamTagVisitor
+	{
+		private boolean exists;
+
+		@Override
+		public ValueResult visitRootEntry(TagType<?> type)
+		{
+			this.exists = true;
+			return ValueResult.HALT;
+		}
+
+		@Override public ValueResult visitEnd()                        { return ValueResult.HALT; }
+		@Override public ValueResult visit(String value)               { return ValueResult.HALT; }
+		@Override public ValueResult visit(byte value)                 { return ValueResult.HALT; }
+		@Override public ValueResult visit(short value)                { return ValueResult.HALT; }
+		@Override public ValueResult visit(int value)                  { return ValueResult.HALT; }
+		@Override public ValueResult visit(long value)                 { return ValueResult.HALT; }
+		@Override public ValueResult visit(float value)                { return ValueResult.HALT; }
+		@Override public ValueResult visit(double value)               { return ValueResult.HALT; }
+		@Override public ValueResult visit(byte[] value)               { return ValueResult.HALT; }
+		@Override public ValueResult visit(int[] value)                { return ValueResult.HALT; }
+		@Override public ValueResult visit(long[] value)               { return ValueResult.HALT; }
+		@Override public ValueResult visitList(TagType<?> type, int n)  { return ValueResult.HALT; }
+		@Override public ValueResult visitContainerEnd()               { return ValueResult.HALT; }
+		@Override public EntryResult visitEntry(TagType<?> type)                    { return EntryResult.HALT; }
+		@Override public EntryResult visitEntry(TagType<?> type, String key)        { return EntryResult.HALT; }
+		@Override public EntryResult visitElement(TagType<?> type, int index)       { return EntryResult.HALT; }
 	}
 
 	private final ServerLevel world;
@@ -173,7 +216,8 @@ public class VerifyChunkLoader
 		else
 		{
 			request.stage = Stage.PROBE;
-			request.probe = cache.chunkMap.read(pos);
+			request.probeVisitor = new ExistenceProbe();
+			request.probe = cache.chunkMap.chunkScanner().scanChunk(pos, request.probeVisitor);
 		}
 
 		this.requests.put(pos, request);
@@ -183,11 +227,9 @@ public class VerifyChunkLoader
 
 	private Result onProbeFinished(ChunkPos pos, ServerChunkCache cache, Request request)
 	{
-		Optional<CompoundTag> stored;
-
 		try
 		{
-			stored = request.probe.join();
+			request.probe.join();
 		}
 		catch (Exception e)
 		{
@@ -197,7 +239,7 @@ public class VerifyChunkLoader
 			return Result.UNGENERATED;
 		}
 
-		if (stored.isEmpty())
+		if (!request.probeVisitor.exists)
 		{
 			// Never generated. Loading it would create terrain that did not exist before.
 			this.requests.remove(pos);
