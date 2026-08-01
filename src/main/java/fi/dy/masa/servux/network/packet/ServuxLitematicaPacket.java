@@ -400,8 +400,12 @@ public class ServuxLitematicaPacket implements IServerPayloadData
 
 		if (type == null)
 		{
-			// Invalid Type
-			Servux.LOGGER.warn("ServuxLitematicaPacket#fromPacket: invalid packet type received");
+			// An unknown type means the peer is newer than us. Drain the rest of the
+			// payload before giving up: leaving bytes unread makes the vanilla decoder
+			// fail the whole custom_payload packet, which disconnects the client over
+			// nothing more than a version difference.
+			Servux.LOGGER.warn("ServuxLitematicaPacket#fromPacket: invalid packet type '{}' received, ignoring {} remaining bytes", i, input.readableBytes());
+			input.skipBytes(input.readableBytes());
 			return null;
 		}
 		switch (type)
