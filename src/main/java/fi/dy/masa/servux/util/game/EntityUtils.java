@@ -3,7 +3,6 @@ package fi.dy.masa.servux.util.game;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
-import java.util.concurrent.ThreadLocalRandom;
 import java.util.function.Predicate;
 import javax.annotation.Nullable;
 
@@ -28,7 +27,6 @@ import fi.dy.masa.servux.util.position.PositionUtils;
 public class EntityUtils
 {
     public static final Predicate<Entity> NOT_PLAYER = entity -> (entity instanceof Player) == false;
-    private static final ThreadLocalRandom RAND = ThreadLocalRandom.current();
 
     public static boolean isCreativeMode(Player player)
     {
@@ -98,19 +96,20 @@ public class EntityUtils
             {
                 Entity entity = optional.get();
 
-                if (!nbt.containsLenient("UUID"))
-                {
-                    entity.setUUID(UUID.randomUUID());
-                }
-
-                if (nbt.contains("LastEntityID", Constants.NBT.TAG_INT))
-                {
-                    entity.setId(nbt.getIntOrDefault("LastEntityID", -1));
-                }
-                else
-                {
-                    entity.setId(RAND.nextInt(50000, Integer.MAX_VALUE));
-                }
+                // A paste creates new entities, so it must not carry over the identity of
+                // the ones the schematic was taken from.
+                //
+                // The UUID has to be fresh because ServerLevel rejects an entity whose UUID
+                // is already known ("UUID of added entity already exists"), which silently
+                // drops it - pasting the same schematic twice would lose every entity.
+                //
+                // The network id must be left alone entirely. ChunkMap keys its tracker on
+                // Entity#getId, so forcing the saved id throws "Entity is already tracked!"
+                // and takes the server down as soon as it collides with a live entity. The
+                // id assigned when the entity was constructed already comes from the global
+                // counter and is unique. ("LastEntityID" exists for Litematica's client side
+                // schematic world, which has no tracker; it does not apply to a real world.)
+                entity.setUUID(UUID.randomUUID());
 
                 return entity;
             }
