@@ -3,6 +3,7 @@ package fi.dy.masa.servux.util.game;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.function.Predicate;
 import javax.annotation.Nullable;
 
@@ -27,6 +28,7 @@ import fi.dy.masa.servux.util.position.PositionUtils;
 public class EntityUtils
 {
     public static final Predicate<Entity> NOT_PLAYER = entity -> (entity instanceof Player) == false;
+    private static final ThreadLocalRandom RAND = ThreadLocalRandom.current();
 
     public static boolean isCreativeMode(Player player)
     {
