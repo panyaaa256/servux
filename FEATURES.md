@@ -22,10 +22,16 @@ Servux New Features (0.3.7+)
   * Litematic Paste operations has a separate permissions node.
   * Provides server side Schematic Verification via `/servux verify`, which is not bound by the client's render distance.  Verification is read-only: it never writes to the world, never generates terrain, and never stalls the server thread.
     * Mismatches are reported per category (`Missing`, `Extra`, `Wrong Block`, `Wrong State`, `Wrong Contents`), with clickable coordinates that suggest a teleport, so the results are usable from vanilla clients with no mod installed.
-    * Chunks outside the client's render distance are loaded on demand, so a verification covers the whole build.  Loading is non-blocking and the chunks are loaded but §onot ticked§r -- no mob spawning, no redstone, no block or random ticks.  Chunks that have never been generated are §oreported, not generated§r, so inspecting a build never enlarges the world; `verify_generate_missing_chunks` opts into generating them.  New loads back off while the server's tick time is high (`verify_pause_mspt_threshold`).
+    * Chunks outside the client's render distance are loaded on demand, so a verification covers the whole build.  Loading is non-blocking and the chunks are loaded but §onot ticked§r -- no mob spawning, no redstone, no block or random ticks.  Chunks that have never been generated are §oreported, not generated§r, so inspecting a build never enlarges the world; `chunk_walk_generate_missing_chunks` opts into generating them.  New loads back off while the server's tick time is high (`chunk_walk_pause_mspt_threshold`), and a walk that can never catch up ends with the remainder reported rather than sitting in the scheduler forever.
     * `Wrong Contents` compares container inventories, which Litematica's client side verifier cannot do at all -- it only compares block states, so an empty chest counts as correct there.  Only checked where the block state already matches, so this count overlaps the correct-state count rather than adding to the other categories.
     * Can verify schematics already shared through Syncmatica without an upload, by reading its placement manifest from disk.  This is a read-only, unofficial interface and can be turned off with `verify_syncmatica_interop`.
     * Verify operations have a separate permissions node.
+    * Results are streamed to the client in acknowledged batches (`task_batch_positions`), so a verification covering millions of positions never builds one oversized packet.  A session that nobody acknowledges is discarded after `task_session_timeout`.
+  * Provides server side Area Analysis via `/servux analyze`, which counts what is actually in a region of the world without the client reading a single chunk.
+    * Reports block counts per block state, entity counts per type, and the contents of every container in the area (`analyze_containers`), walking nested shulker boxes and bundles.
+    * Shares the chunk walking policy with verification, so the same `chunk_walk_*` settings apply and an analysis is equally read-only.
+    * `analyze_max_volume` caps how many blocks one analysis may read, so a mis-typed selection cannot ask the server to walk the whole world.
+    * Analyze operations have a separate permissions node.
 * `tweaks_data` - Provides Tweakeroo with entity/tile entity NBT information for `inventoryPreview`.  Can be expanded in the future to support more advanced Tweaks.  It can be activated by enabling `entityDataSync`.
   * Can provide the server side method for `stackable_shulkers` with the related `stackable_shulkers_count`, simillar to how Carpet can provide this.
   * This implementation also provides a lightweight `stackable_shulkers_fix` config for hoppers coded for Carpet by [KikuGie] under their [stackable-shulkers-fix] mod.
@@ -44,6 +50,10 @@ Servux New Features (0.3.7+)
   * `verify status` -- Shows the progress of the verifications currently running.
   * `verify cancel` [session] -- Cancels a running verification; defaults to your own.
   * `verify show` [category] [page] -- Lists the mismatches of one [category] from your latest verification.  Each coordinate can be clicked to auto-complete a teleport to it.
+  * `analyze start` [from] [to] [entities] [containers] -- Starts a server side analysis of the region between the two corners.  [entities] and [containers] are optional and default to counting both.
+  * `analyze status` -- Shows the progress of the analyses currently running.
+  * `analyze cancel` [session] -- Cancels a running analysis; defaults to your own.
+  * `analyze show` [page] -- Lists the tally from your latest analysis, most numerous first.
   * All config settings can be clicked upon to auto-complete a `set` command; after using `info`, `list` or `search`; similar to how the `/carpet` command works.
   * Available settings are modularized per their respective [dataprovider].
   * All `/servux` command text can be translated using the available i18n language files.  Currently only English `en_us` and Chinese (Traditional) `zh_cn` is available, but more may become available as people offer translation assistance.  If you wish to contribute translations; please visit https://translate.sakuraryoko.com -- and if you need a language file added; please contact me.
@@ -77,20 +87,27 @@ Servux New Features (0.3.7+)
   "litematic_data": {
     "permission_level": 0,
     "permission_level_paste": 0,
+    "permission_level_tasks": 0,
     "permission_level_verify": 0,
+    "permission_level_analyze": 0,
+    "player_task_feedback": false,
     "fix_rail_rotations": true,
     "fix_stairs_mirror": true,
     "fix_chest_mirror": true,
+    "deduplicate_schematic_entities": false,
     "verify_max_result_positions": 200000,
-    "verify_session_timeout": 300,
+    "task_batch_positions": 16384,
+    "task_session_timeout": 300,
     "verify_syncmatica_interop": true,
-    "verify_force_load_chunks": true,
-    "verify_generate_missing_chunks": false,
-    "verify_max_chunk_loads_per_tick": 2,
-    "verify_pause_mspt_threshold": 45,
+    "chunk_walk_force_load_chunks": true,
+    "chunk_walk_generate_missing_chunks": false,
+    "chunk_walk_max_loads_per_tick": 2,
+    "chunk_walk_pause_mspt_threshold": 45,
     "verify_nbt": true,
     "verify_nbt_slot_exact": false,
-    "verify_nbt_strict": false
+    "verify_nbt_strict": false,
+    "analyze_max_volume": 67108864,
+    "analyze_containers": true
   },
   "structure_bounding_boxes": {
     "permission_level": 0,
@@ -134,6 +151,7 @@ Servux New Features (0.3.7+)
 ## Future plans:
 * Add Syncmatica-like protocol for Litematica.
   * Read-only Syncmatica interop already exists for `/servux verify`; sharing schematics over Servux's own channel is still to come.
-* Extend server side verification:
-  * Stream results to the Litematica Verifier GUI over the task response packets, so mismatches can be highlighted in world.  Advertised to clients through the `Features` metadata list rather than a protocol version bump.
-  * Compare entities as well as blocks and container contents.
+* Extend the server side task sessions:
+  * Compare entities during verification, as well as blocks and container contents.
+  * Server side schematic saving.  The task exists but nothing starts it yet, on either side.
+  * Let a client cancel a fill or delete.  Those run on the upstream task manager, which tracks no owner, so only the session driven tasks can currently be stopped on request.
