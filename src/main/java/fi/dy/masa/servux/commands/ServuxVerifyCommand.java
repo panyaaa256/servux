@@ -27,7 +27,9 @@ import fi.dy.masa.servux.schematic.placement.SchematicPlacement;
 import fi.dy.masa.servux.schematic.verifier.VerifyMismatchType;
 import fi.dy.masa.servux.schematic.verifier.VerifyReport;
 import fi.dy.masa.servux.schematic.verifier.VerifySession;
-import fi.dy.masa.servux.schematic.verifier.VerifySessionManager;
+import fi.dy.masa.servux.scheduler.session.ServerTaskKind;
+import fi.dy.masa.servux.scheduler.session.ServerTaskSession;
+import fi.dy.masa.servux.scheduler.session.ServerTaskSessionManager;
 import fi.dy.masa.servux.util.PermissionsUtil;
 import fi.dy.masa.servux.util.StringUtils;
 
@@ -82,7 +84,7 @@ public class ServuxVerifyCommand
 	{
 		ServerPlayer player = source.getPlayer();
 
-		return player != null ? player.getUUID() : VerifySession.CONSOLE_OWNER;
+		return player != null ? player.getUUID() : ServerTaskSession.CONSOLE_OWNER;
 	}
 
 	private static int listPlacements(CommandContext<CommandSourceStack> ctx) throws CommandSyntaxException
@@ -179,7 +181,10 @@ public class ServuxVerifyCommand
 	private static int status(CommandContext<CommandSourceStack> ctx) throws CommandSyntaxException
 	{
 		CommandSourceStack source = ctx.getSource();
-		List<VerifySession> running = VerifySessionManager.INSTANCE.getAllRunning();
+		List<VerifySession> running = ServerTaskSessionManager.INSTANCE.getAllRunning(ServerTaskKind.VERIFY)
+		                                                     .stream()
+		                                                     .map(VerifySession.class::cast)
+		                                                     .toList();
 
 		if (running.isEmpty())
 		{
@@ -214,7 +219,7 @@ public class ServuxVerifyCommand
 		{
 			try
 			{
-				session = VerifySessionManager.INSTANCE.get(UUID.fromString(sessionId));
+				session = ServerTaskSessionManager.INSTANCE.get(UUID.fromString(sessionId), VerifySession.class);
 			}
 			catch (IllegalArgumentException e)
 			{
@@ -223,7 +228,7 @@ public class ServuxVerifyCommand
 		}
 		else
 		{
-			session = VerifySessionManager.INSTANCE.getRunningFor(ownerOf(source));
+			session = (VerifySession) ServerTaskSessionManager.INSTANCE.getRunningFor(ownerOf(source), ServerTaskKind.VERIFY);
 		}
 
 		if (session == null || !session.isRunning())
@@ -251,7 +256,7 @@ public class ServuxVerifyCommand
 			throw StringUtils.translateError("servux.litematics.verify.error.unknown_category", categoryName);
 		}
 
-		VerifySession session = VerifySessionManager.INSTANCE.getLatestFor(ownerOf(source));
+		VerifySession session = (VerifySession) ServerTaskSessionManager.INSTANCE.getLatestFor(ownerOf(source), ServerTaskKind.VERIFY);
 
 		if (session == null)
 		{

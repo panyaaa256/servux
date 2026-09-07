@@ -12,6 +12,7 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.state.BlockState;
 
+import fi.dy.masa.servux.scheduler.session.IResultBatcher;
 import fi.dy.masa.servux.util.data.tag.CompoundData;
 import fi.dy.masa.servux.util.data.tag.ListData;
 
@@ -35,7 +36,7 @@ import fi.dy.masa.servux.util.data.tag.ListData;
  * for instance) part way through the enum, which silently shifts every later value. A short
  * name per distinct pair costs nothing measurable and cannot be misread.
  */
-public class VerifyResultSerializer
+public class VerifyResultSerializer implements IResultBatcher
 {
 	private final VerifyResult result;
 
@@ -52,11 +53,13 @@ public class VerifyResultSerializer
 		this.pairs.addAll(result.getMismatches().asMap().entrySet());
 	}
 
+	@Override
 	public boolean hasMore()
 	{
 		return this.pairIndex < this.pairs.size();
 	}
 
+	@Override
 	public int getBatchNumber()
 	{
 		return this.batch;
@@ -68,6 +71,7 @@ public class VerifyResultSerializer
 	 * The final batch additionally carries the run's totals, so the client knows the
 	 * stream is complete and can fill in the summary counters in one go.
 	 */
+	@Override
 	public CompoundData nextBatch(int maxPositions, UUID sessionId)
 	{
 		CompoundData tag = new CompoundData();
