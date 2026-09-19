@@ -98,20 +98,26 @@ public class EntityUtils
             {
                 Entity entity = optional.get();
 
-                // A paste creates new entities, so it must not carry over the identity of
-                // the ones the schematic was taken from.
+                // A paste creates new entities, so by default it must not carry over the
+                // identity of the ones the schematic was taken from.
                 //
-                // The UUID has to be fresh because ServerLevel rejects an entity whose UUID
-                // is already known ("UUID of added entity already exists"), which silently
-                // drops it - pasting the same schematic twice would lose every entity.
+                // The UUID is the one exception, and only with deduplicate_schematic_entities
+                // on. ServerLevel rejects an entity whose UUID is already known ("UUID of
+                // added entity already exists"), and that rejection is the deduplication:
+                // keeping the saved UUID is what stops a second paste of the same schematic
+                // from spawning its entities again. With the setting off the same rejection
+                // would silently drop every entity of a second paste, so the UUID is fresh.
                 //
-                // The network id must be left alone entirely. ChunkMap keys its tracker on
+                // The network id must be left alone either way. ChunkMap keys its tracker on
                 // Entity#getId, so forcing the saved id throws "Entity is already tracked!"
                 // and takes the server down as soon as it collides with a live entity. The
                 // id assigned when the entity was constructed already comes from the global
                 // counter and is unique. ("LastEntityID" exists for Litematica's client side
                 // schematic world, which has no tracker; it does not apply to a real world.)
-                entity.setUUID(UUID.randomUUID());
+                if (!LitematicsDataProvider.INSTANCE.shouldDeDuplicateEntities())
+                {
+                    entity.setUUID(UUID.randomUUID());
+                }
 
                 return entity;
             }
