@@ -617,6 +617,30 @@ public class LitematicsDataProvider extends DataProviderBase
 		       ? session : null;
 	}
 
+	/**
+	 * The player a chunk walking task will run for.
+	 * <p>
+	 * A task needs one: {@code TaskBase} reads the player's position to sort chunks
+	 * closest-first, and the progress pings go to that player. A command gives one through
+	 * its source; a packet driven request has no source at all, so the requester - who by
+	 * definition is a player, since the packet came from them - is looked up by owner
+	 * instead. Without that, every packet driven verify, analysis and material list would
+	 * refuse to start.
+	 *
+	 * @return null for a console or command block source, which has no player either way
+	 */
+	@Nullable
+	private ServerPlayer taskPlayerFor(ServerLevel level, UUID owner, @Nullable CommandSourceStack source)
+	{
+		if (source != null)
+		{
+			return source.getPlayer();
+		}
+
+		return owner.equals(ServerTaskSession.CONSOLE_OWNER)
+		       ? null : level.getServer().getPlayerList().getPlayer(owner);
+	}
+
 	/** The permission gate for each kind of server side task. */
 	private boolean hasPermissionFor(ServerPlayer player, ServerTaskKind kind)
 	{
@@ -1064,10 +1088,7 @@ public class LitematicsDataProvider extends DataProviderBase
 	                                 @Nullable UUID sessionId,
 	                                 @Nullable Consumer<VerifySession> onComplete)
 	{
-		// A task now needs a player: TaskBase reads the player's position to sort chunks
-		// closest-first, and the progress HUD is sent to that player. A console or command
-		// block source has none, so refuse here rather than construct a task that throws.
-		ServerPlayer player = source != null ? source.getPlayer() : null;
+		ServerPlayer player = this.taskPlayerFor(level, owner, source);
 
 		if (player == null)
 		{
@@ -1220,10 +1241,7 @@ public class LitematicsDataProvider extends DataProviderBase
 			return null;
 		}
 
-		// A task now needs a player: TaskBase reads the player's position to sort chunks
-		// closest-first, and the progress HUD is sent to that player. A console or command
-		// block source has none, so refuse here rather than construct a task that throws.
-		ServerPlayer player = source != null ? source.getPlayer() : null;
+		ServerPlayer player = this.taskPlayerFor(level, owner, source);
 
 		if (player == null)
 		{
