@@ -32,6 +32,12 @@ Servux New Features (0.3.7+)
     * Shares the chunk walking policy with verification, so the same `chunk_walk_*` settings apply and an analysis is equally read-only.
     * `analyze_max_volume` caps how many blocks one analysis may read, so a mis-typed selection cannot ask the server to walk the whole world.
     * Analyze operations have a separate permissions node.
+  * Provides server side Material Lists via `/servux materials`, or from a client's own placement, which prices up a schematic placement against the real world rather than against what the client happens to have loaded.
+    * Reports, per block state, how many the placement needs, how many are still missing, and how many have some other block in the way; plus the entities the placement would spawn and the contents of every container in it.
+    * This is the reason to do it server side: Litematica counts a block as missing when its own client world says air there, and outside the render distance that is every block.  A build larger than the render distance therefore reports as almost entirely missing on the client, which is exactly the material list a player is most likely to ask for.
+    * `ignore_state` skips counting a block of the right type but the wrong state as missing, matching Litematica's own `Material List Ignore State` option.
+    * Shares the chunk walking policy with verification, so the same `chunk_walk_*` settings apply and a material list is equally read-only, and it walks exactly the blocks a paste of the same placement would write.
+    * Material list operations have a separate permissions node.
 * `tweaks_data` - Provides Tweakeroo with entity/tile entity NBT information for `inventoryPreview`.  Can be expanded in the future to support more advanced Tweaks.  It can be activated by enabling `entityDataSync`.
   * Can provide the server side method for `stackable_shulkers` with the related `stackable_shulkers_count`, simillar to how Carpet can provide this.
   * This implementation also provides a lightweight `stackable_shulkers_fix` config for hoppers coded for Carpet by [KikuGie] under their [stackable-shulkers-fix] mod.
@@ -54,6 +60,10 @@ Servux New Features (0.3.7+)
   * `analyze status` -- Shows the progress of the analyses currently running.
   * `analyze cancel` [session] -- Cancels a running analysis; defaults to your own.
   * `analyze show` [page] -- Lists the tally from your latest analysis, most numerous first.
+  * `materials start` [placement] [ignore_state] -- Starts a server side material list for a placement shared through Syncmatica.  [ignore_state] is optional and defaults to false.
+  * `materials status` -- Shows the progress of the material lists currently running.
+  * `materials cancel` [session] -- Cancels a running material list; defaults to your own.
+  * `materials show` [page] -- Lists what your latest material list still needs, most missing first.
   * All config settings can be clicked upon to auto-complete a `set` command; after using `info`, `list` or `search`; similar to how the `/carpet` command works.
   * Available settings are modularized per their respective [dataprovider].
   * All `/servux` command text can be translated using the available i18n language files.  Currently only English `en_us` and Chinese (Traditional) `zh_cn` is available, but more may become available as people offer translation assistance.  If you wish to contribute translations; please visit https://translate.sakuraryoko.com -- and if you need a language file added; please contact me.
@@ -90,6 +100,7 @@ Servux New Features (0.3.7+)
     "permission_level_tasks": 0,
     "permission_level_verify": 0,
     "permission_level_analyze": 0,
+    "permission_level_materials": 0,
     "player_task_feedback": false,
     "fix_rail_rotations": true,
     "fix_stairs_mirror": true,

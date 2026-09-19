@@ -41,6 +41,7 @@ import fi.dy.masa.servux.scheduler.TaskScheduler;
 import fi.dy.masa.servux.scheduler.tasks.TaskAnalyzeArea;
 import fi.dy.masa.servux.scheduler.tasks.TaskDeleteArea;
 import fi.dy.masa.servux.scheduler.tasks.TaskFillArea;
+import fi.dy.masa.servux.scheduler.tasks.TaskMaterialListPlacement;
 import fi.dy.masa.servux.scheduler.tasks.TaskPasteSchematicPerChunkBase;
 import fi.dy.masa.servux.scheduler.tasks.TaskPasteSchematicPerChunkDirect;
 import fi.dy.masa.servux.scheduler.tasks.TaskSaveSchematic;
@@ -49,6 +50,9 @@ import fi.dy.masa.servux.schematic.LitematicaSchematic;
 import fi.dy.masa.servux.schematic.analyzer.AnalyzeResult;
 import fi.dy.masa.servux.schematic.analyzer.AnalyzeResultSerializer;
 import fi.dy.masa.servux.schematic.analyzer.AnalyzeSession;
+import fi.dy.masa.servux.schematic.materials.MaterialListResult;
+import fi.dy.masa.servux.schematic.materials.MaterialListResultSerializer;
+import fi.dy.masa.servux.schematic.materials.MaterialListSession;
 import fi.dy.masa.servux.schematic.placement.SchematicPlacement;
 import fi.dy.masa.servux.schematic.selection.AreaSelection;
 import fi.dy.masa.servux.schematic.selection.Box;
@@ -91,6 +95,7 @@ public class LitematicsDataProvider extends DataProviderBase
 	private final ServuxIntSetting taskPermissionLevel = new ServuxIntSetting(this, "permission_level_tasks", 0, 4, 0);
 	private final ServuxIntSetting verifyPermissionLevel = new ServuxIntSetting(this, "permission_level_verify", 0, 4, 0);
 	private final ServuxIntSetting analyzePermissionLevel = new ServuxIntSetting(this, "permission_level_analyze", 0, 4, 0);
+	private final ServuxIntSetting materialsPermissionLevel = new ServuxIntSetting(this, "permission_level_materials", 0, 4, 0);
 	private final ServuxBoolSetting playerTaskFeedback = new ServuxBoolSetting(this, "player_task_feedback", false);
 	public final ServuxBoolSetting fixRaiLRotations = new ServuxBoolSetting(this, "fix_rail_rotations", true);
 	public final ServuxBoolSetting fixStairMirror = new ServuxBoolSetting(this, "fix_stairs_mirror", true);
@@ -126,6 +131,7 @@ public class LitematicsDataProvider extends DataProviderBase
 			this.taskPermissionLevel,
 			this.verifyPermissionLevel,
 			this.analyzePermissionLevel,
+			this.materialsPermissionLevel,
 			this.playerTaskFeedback,
 			this.fixRaiLRotations,
 			this.fixStairMirror,
@@ -171,6 +177,7 @@ public class LitematicsDataProvider extends DataProviderBase
 		features.add(new StringData("verify"));
 		features.add(new StringData("verify_nbt"));
 		features.add(new StringData(ServerTaskKind.ANALYZE.getName()));
+		features.add(new StringData(ServerTaskKind.MATERIALS.getName()));
 		this.metadata.put("Features", features);
 
 		// Litematic-Transmit Dir
@@ -648,6 +655,7 @@ public class LitematicsDataProvider extends DataProviderBase
 		{
 			case VERIFY -> this.hasPermissionsForVerify(player);
 			case ANALYZE -> this.hasPermissionsForAnalyze(player);
+			case MATERIALS -> this.hasPermissionsForMaterials(player);
 		};
 	}
 
@@ -690,6 +698,12 @@ public class LitematicsDataProvider extends DataProviderBase
 	private void beginAnalyzeStreaming(AnalyzeSession session)
 	{
 		this.beginStreaming(session, () -> new AnalyzeResultSerializer(session.getResult()));
+	}
+
+	/** Called when a material list finishes. */
+	private void beginMaterialListStreaming(MaterialListSession session)
+	{
+		this.beginStreaming(session, () -> new MaterialListResultSerializer(session.getResult()));
 	}
 
 	/**
@@ -751,6 +765,12 @@ public class LitematicsDataProvider extends DataProviderBase
 	public void sendVerifyStatus(VerifySession session)
 	{
 		this.sendTaskStatus(session, tag -> tag.putInt("Mismatches", session.getResult().getTotalMismatches()));
+	}
+
+	/** Progress ping for a material list, which also reports what is still missing so far. */
+	public void sendMaterialListStatus(MaterialListSession session)
+	{
+		this.sendTaskStatus(session, tag -> tag.putLong("Missing", session.getResult().getBlocksMissing()));
 	}
 
 	/** Reports a failure as a translation key, so the client renders it in its own language. */
@@ -1349,6 +1369,157 @@ public class LitematicsDataProvider extends DataProviderBase
 		}
 	}
 
+	/**
+	 * Starts a server side material list for the given placement.
+	 * <p>
+	 * Read-only, like a verification, and subject to the same chunk policy: chunks that were
+	 * never generated are reported rather than generated.
+	 *
+	 * @param ignoreState     do not count a block of the right type but the wrong state as
+	 *                        missing, matching Litematica's {@code MATERIAL_LIST_IGNORE_STATE}
+	 * @param countEntities   tally the entities the placement would spawn
+	 * @param countContainers tally the contents of the containers the placement would place
+	 * @param owner           the requester, used to enforce one running material list each
+	 * @param source          the command source to report back to, or null for a packet request
+	 * @param sessionId       the id to run under, or null to mint one. A packet driven request
+	 *                        supplies its own so it can match the replies to its request.
+	 * @param onComplete      run on the server thread when the walk ends
+	 * @return the new session, or null if the requester already has one running
+	 */
+	@Nullable
+	public MaterialListSession startMaterialList(ServerLevel level,
+	                                             SchematicPlacement placement,
+	                                             @Nullable LayerRange layerRange,
+	                                             boolean ignoreState,
+	                                             boolean countEntities,
+	                                             boolean countContainers,
+	                                             UUID owner,
+	                                             @Nullable CommandSourceStack source,
+	                                             @Nullable UUID sessionId,
+	                                             @Nullable Consumer<MaterialListSession> onComplete)
+	{
+		ServerPlayer player = this.taskPlayerFor(level, owner, source);
+
+		if (player == null)
+		{
+			return null;
+		}
+
+		MaterialListResult result = new MaterialListResult();
+		MaterialListSession session = new MaterialListSession(sessionId != null ? sessionId : UUID.randomUUID(),
+		                                                      owner, placement.getName(), level, result, source);
+
+		if (!ServerTaskSessionManager.INSTANCE.add(session, this.taskSessionTimeout.getValue()))
+		{
+			return null;
+		}
+
+		TaskContext ctx = new TaskContext(level.getServer(), level, player, placement.getName(), System.currentTimeMillis());
+
+		// A layer range only takes effect when the behavior asks for it; see shouldPasteBlock()
+		PasteLayerBehavior layerBehavior = layerRange != null ? PasteLayerBehavior.RENDERED_ONLY : PasteLayerBehavior.ALL;
+
+		ServerChunkLoader chunkLoader = this.chunkWalkForceLoadChunks.getValue()
+		                              ? new ServerChunkLoader(level,
+		                                                      this.chunkWalkGenerateMissingChunks.getValue(),
+		                                                      this.chunkWalkMaxLoadsPerTick.getValue())
+		                              : null;
+
+		TaskMaterialListPlacement task = new TaskMaterialListPlacement(
+				ctx, Collections.singletonList(placement), layerRange, layerBehavior, result, chunkLoader,
+				ignoreState, countEntities, countContainers,
+				this.chunkWalkPauseMsptThreshold.getValue(), null);
+
+		task.setOnProgress(() -> this.sendMaterialListStatus(session));
+
+		task.setOnComplete(() ->
+		                   {
+			                   // A cancel already moved the session out of RUNNING
+			                   if (session.isRunning())
+			                   {
+				                   session.setState(ServerTaskSession.State.DONE);
+			                   }
+
+			                   session.touch();
+
+			                   if (onComplete != null)
+			                   {
+				                   onComplete.accept(session);
+			                   }
+		                   });
+
+		session.setTask(task);
+		TaskScheduler.getInstance().scheduleTask(task, 1);
+
+		Servux.debugLog("litematic_data: started material list session {} for placement '{}'", session.getSessionId(), placement.getName());
+
+		return session;
+	}
+
+	/**
+	 * Handles a {@code LitematicaMaterials} request: a client asking the server to price up
+	 * a placement it uploaded.
+	 * <p>
+	 * Same shape as {@link #handleClientVerifyRequest} - the schematic travels with the
+	 * placement - because the two answer the same question about the same blocks; a
+	 * verification says what is wrong, a material list says what is still needed. Clients
+	 * learn that this exists from the {@code materials} entry in the {@code Features}
+	 * metadata list, not from the protocol version.
+	 */
+	public void handleClientMaterialListRequest(ServerPlayer player, CompoundData tags)
+	{
+		if (!this.isPlayerRegistered(player) || !this.isEnabled() || tags == null || tags.isEmpty())
+		{
+			return;
+		}
+
+		int[] sessionIdArray = tags.getIntArray("SessionId");
+
+		if (!this.hasPermissionsForMaterials(player))
+		{
+			Servux.debugLog("litematic_data: Denying Litematic Material List for player {}, Insufficient Permissions.", player.getName().tryCollapseToString());
+			this.sendTaskError(player, ServerTaskKind.MATERIALS, sessionIdArray, "servux.litematics.error.insufficent_for_materials");
+			return;
+		}
+
+		SchematicPlacement placement;
+
+		try
+		{
+			// createFromData() rethrows parse failures as unchecked, and this runs off a
+			// packet, so a malformed payload must not escape into the network thread
+			placement = SchematicPlacement.createFromData(tags);
+		}
+		catch (Exception e)
+		{
+			Servux.LOGGER.warn("litematic_data: failed to read the material list placement from player {}; {}", player.getName().tryCollapseToString(), e.getLocalizedMessage());
+			placement = null;
+		}
+
+		if (placement == null)
+		{
+			this.sendTaskError(player, ServerTaskKind.MATERIALS, sessionIdArray, "servux.litematics.materials.error.bad_placement");
+			return;
+		}
+
+		LayerRange layerRange = tags.getCodec("RenderLayerRange", LayerRange.CODEC).orElse(null);
+
+		// The client picks the session id so that it can match replies to its own request
+		UUID sessionId = VerifyResultSerializer.uuidFromIntArray(sessionIdArray);
+
+		MaterialListSession session = this.startMaterialList(player.level(), placement, layerRange,
+		                                                     tags.getBoolean("IgnoreState"),
+		                                                     tags.getBoolean("CountEntities"),
+		                                                     tags.getBoolean("CountContainers"),
+		                                                     player.getUUID(), null, sessionId,
+		                                                     this::beginMaterialListStreaming);
+
+		if (session == null)
+		{
+			this.sendTaskError(player, ServerTaskKind.MATERIALS, sessionIdArray, "servux.litematics.materials.error.already_running");
+		}
+	}
+
 	/** True when the area covers more blocks than one analysis is allowed to read. */
 	public boolean exceedsAnalyzeVolume(AreaSelection area)
 	{
@@ -1414,6 +1585,11 @@ public class LitematicsDataProvider extends DataProviderBase
 	public boolean hasPermissionsForAnalyze(ServerPlayer player)
 	{
 		return this.hasPermission(player) && PermissionsUtil.check(player, this.permNode + ".analyze", this.analyzePermissionLevel.getValue());
+	}
+
+	public boolean hasPermissionsForMaterials(ServerPlayer player)
+	{
+		return this.hasPermission(player) && PermissionsUtil.check(player, this.permNode + ".materials", this.materialsPermissionLevel.getValue());
 	}
 
 	public boolean isSyncmaticaInteropEnabled()

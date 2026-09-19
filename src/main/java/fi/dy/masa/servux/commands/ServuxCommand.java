@@ -89,6 +89,7 @@ public class ServuxCommand implements IServerCommand
                                                                                       })))
                                     .then(ServuxVerifyCommand.build())
                                     .then(ServuxAnalyzeCommand.build())
+                                    .then(ServuxMaterialListCommand.build())
                                     .then(Commands.literal("search")
                                                         .requires(PermissionsUtil.require(Reference.MOD_ID + ".commands.list", 4))
                                                         .then(Commands.argument("query", StringArgumentType.greedyString())

@@ -15,7 +15,8 @@ import javax.annotation.Nullable;
 public enum ServerTaskKind
 {
 	VERIFY("verify", "LitematicaVerify"),
-	ANALYZE("analyze", "LitematicaAnalyze");
+	ANALYZE("analyze", "LitematicaAnalyze"),
+	MATERIALS("materials", "LitematicaMaterials");
 
 	private final String name;
 	private final String taskPrefix;
