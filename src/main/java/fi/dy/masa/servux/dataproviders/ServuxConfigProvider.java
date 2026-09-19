@@ -14,6 +14,7 @@ import fi.dy.masa.servux.settings.ServuxBoolSetting;
 import fi.dy.masa.servux.settings.ServuxIntSetting;
 import fi.dy.masa.servux.settings.ServuxStringSetting;
 import fi.dy.masa.servux.util.StringUtils;
+import fi.dy.masa.servux.util.data.tag.CompoundData;
 import fi.dy.masa.servux.util.i18n.i18nManager;
 
 public class ServuxConfigProvider extends DataProviderBase
@@ -109,7 +110,7 @@ public class ServuxConfigProvider extends DataProviderBase
 
     public boolean hasDebugMode()
     {
-        return this.debugLog.getValue() || Reference.DEV_DEBUG;
+        return this.debugLog.getValue() || Reference.DEBUG_MODE;
     }
 
     @Override
@@ -121,6 +122,30 @@ public class ServuxConfigProvider extends DataProviderBase
         }
 
         return Permissions.check(player, Reference.MOD_ID+".main.admin", this.adminPermissionLevel.getValue());
+    }
+
+    @Override
+    public void register(ServerPlayer player, CompoundData tags)
+    {
+        // NO-OP
+    }
+
+    @Override
+    public void unregister(ServerPlayer player, CompoundData tags)
+    {
+        // NO-OP
+    }
+
+    @Override
+    public void onPacketFailure(ServerPlayer player)
+    {
+        // NO-OP
+    }
+
+    @Override
+    public void removePlayer(ServerPlayer player)
+    {
+        // NO-OP
     }
 
     public boolean hasPermission_EasyPlace(ServerPlayer player)
@@ -142,16 +167,4 @@ public class ServuxConfigProvider extends DataProviderBase
 	{
 		return this.defaultLanguage.getValue();
 	}
-
-    @Override
-    public void onTickEndPre()
-    {
-        // NO-OP
-    }
-
-    @Override
-    public void onTickEndPost()
-    {
-        // NO-OP
-    }
 }

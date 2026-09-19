@@ -17,6 +17,7 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.Container;
 import net.minecraft.world.entity.Display;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.Leashable;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.decoration.ItemFrame;
 import net.minecraft.world.entity.decoration.painting.Painting;
@@ -38,6 +39,10 @@ import fi.dy.masa.servux.schematic.LitematicaSchematic.EntityInfo;
 import fi.dy.masa.servux.schematic.container.LitematicaBlockStateContainer;
 import fi.dy.masa.servux.schematic.placement.SchematicPlacement;
 import fi.dy.masa.servux.schematic.placement.SubRegionPlacement;
+import fi.dy.masa.servux.util.data.tag.CompoundData;
+import fi.dy.masa.servux.util.data.tag.ListData;
+import fi.dy.masa.servux.util.data.tag.util.DataTypeUtils;
+import fi.dy.masa.servux.util.nbt.NbtKeys;
 import fi.dy.masa.servux.util.nbt.NbtUtils;
 import fi.dy.masa.servux.util.nbt.NbtView;
 import fi.dy.masa.servux.util.position.PositionUtils;
@@ -78,7 +83,7 @@ public class SchematicPlacingUtils
 
                 if (placement.isEnabled())
                 {
-                    Map<BlockPos, CompoundTag> blockEntityMap = schematic.getBlockEntityMapForRegion(regionName);
+                    Map<BlockPos, CompoundData> blockEntityMap = schematic.getBlockEntityMapForRegion(regionName);
                     Map<BlockPos, ScheduledTick<@NotNull Block>> scheduledBlockTicks = schematic.getScheduledBlockTicksForRegion(regionName);
                     Map<BlockPos, ScheduledTick<@NotNull Fluid>> scheduledFluidTicks = schematic.getScheduledFluidTicksForRegion(regionName);
 
@@ -110,7 +115,7 @@ public class SchematicPlacingUtils
 
     public static boolean placeBlocksWithinChunk(Level world, ChunkPos chunkPos, String regionName,
                                                  LitematicaBlockStateContainer container,
-                                                 Map<BlockPos, CompoundTag> blockEntityMap,
+                                                 Map<BlockPos, CompoundData> blockEntityMap,
                                                  BlockPos origin,
                                                  SchematicPlacement schematicPlacement,
                                                  SubRegionPlacement placement,
@@ -205,7 +210,7 @@ public class SchematicPlacingUtils
                     }
 
                     posMutable.set(x, y, z);
-                    CompoundTag teNBT = blockEntityMap.get(posMutable);
+                    CompoundData teNBT = blockEntityMap.get(posMutable);
                     BlockPos origPos = posMutable.immutable();
 
                     posMutable.set(posMinRelMinusRegX + x,
@@ -416,7 +421,7 @@ public class SchematicPlacingUtils
 
         for (EntityInfo info : entityList)
         {
-            Vec3 pos = info.posVec;
+            Vec3 pos = info.posVec();
             pos = PositionUtils.getTransformedPosition(pos, schematicPlacement.getMirror(), schematicPlacement.getRotation());
             pos = PositionUtils.getTransformedPosition(pos, placement.getMirror(), placement.getRotation());
             double x = pos.x + offX;
@@ -432,8 +437,20 @@ public class SchematicPlacingUtils
 
             if (x >= minX && x < maxX && z >= minZ && z < maxZ)
             {
-                CompoundTag tag = info.nbt.copy();
-                String id = tag.getStringOr("id", "");
+                CompoundData tag = info.nbt().copy();
+                String id = tag.getStringOrDefault("id", "");
+
+//                Vec3 p = NbtUtils.readEntityPositionFromTag(tag);
+                Vec3 p = DataTypeUtils.readVec3dFromListTag(tag);
+                Vec3 pn = new Vec3(x, y, z);
+
+                // Entity Pos Fix
+                if (p == null || (!p.equals(pn)))
+                {
+                    p = pn;
+//                    NbtUtils.putVec3dCodec(tag, p, "Pos");
+                    DataTypeUtils.putVec3dCodec(tag, pn, NbtKeys.POS);
+                }
 
                 // Avoid warning about invalid hanging position.
                 // Note that this position isn't technically correct, but it only needs to be within 16 blocks
@@ -443,25 +460,56 @@ public class SchematicPlacingUtils
                     id.equals("minecraft:leash_knot") ||
                     id.equals("minecraft:painting"))
                 {
-                    Vec3 p = NbtUtils.readEntityPositionFromTag(tag);
-
-                    if (p == null)
-                    {
-                        p = new Vec3(x, y, z);
-//                        NbtUtils.writeEntityPositionToTag(p, tag);
-                        NbtUtils.putVec3dCodec(tag, p, "Pos");
-                    }
-
                     tag.putInt("TileX", (int) p.x);
                     tag.putInt("TileY", (int) p.y);
                     tag.putInt("TileZ", (int) p.z);
+
+                    // Block-Attached Pos (1.21.5+) Fix
+                    BlockPos ps = tag.getCodec(NbtKeys.ATTACHED_BLOCK_POS, BlockPos.CODEC).orElse(null);
+                    BlockPos nps = new BlockPos((int) x, (int) y, (int) z);
+
+                    if (ps == null || (!ps.equals(nps)))
+                    {
+                        tag.putCodec(NbtKeys.ATTACHED_BLOCK_POS, BlockPos.CODEC, nps);
+                    }
                 }
 
-                ListTag rotation = tag.getListOrEmpty("Rotation");
-                origRot[0] = rotation.getFloatOr(0, 0f);
-                origRot[1] = rotation.getFloatOr(1, 0f);
+                ListData rotation = tag.getList("Rotation");
+                origRot[0] = rotation.getFloatAt(0);
+                origRot[1] = rotation.getFloatAt(1);
 
-                Entity entity = EntityUtils.createEntityAndPassengersFromNBT(tag, world);
+                // TODO -- this can "only" fix leashes saved with newer builds!
+                // Leash-Knot fix (We can't fix the UUID part, unless the other Mob has the *exact same* UUID in the Schematic World)
+                BlockPos lp = tag.getCodec(NbtKeys.LEASH, BlockPos.CODEC).orElse(null);
+
+                if (lp != null && !lp.equals(BlockPos.ZERO))
+                {
+                    final int adjX = lp.getX() + offX;
+                    final int adjY = lp.getY() + offY;
+                    final int adjZ = lp.getZ() + offZ;
+
+                    BlockPos nlp = new BlockPos(adjX, adjY, adjZ);
+                    tag.putCodec(NbtKeys.LEASH, BlockPos.CODEC, nlp);
+                }
+
+                // Home Pos fix
+                BlockPos hp = tag.getCodec(NbtKeys.HOME_POS, BlockPos.CODEC).orElse(null);
+
+                if (hp != null && !hp.equals(BlockPos.ZERO))
+                {
+                    final int hr = tag.getIntOrDefault(NbtKeys.HOME_RADIUS, -1);
+                    final int adjX = hp.getX() + offX;
+                    final int adjY = hp.getY() + offY;
+                    final int adjZ = hp.getZ() + offZ;
+
+                    if (hr > 0)
+                    {
+                        BlockPos nhp = new BlockPos(adjX, adjY, adjZ);
+                        tag.putCodec(NbtKeys.HOME_POS, BlockPos.CODEC, nhp);
+                    }
+                }
+
+                Entity entity = EntityUtils.createEntityAndPassengersFromData(tag, world);
 
                 if (entity != null)
                 {
@@ -508,7 +556,7 @@ public class SchematicPlacingUtils
 
                     EntityUtils.spawnEntityAndPassengersInWorld(entity, world);
 
-                    if (entity instanceof Display)
+                    if (entity instanceof Display || entity instanceof Leashable)
                     {
                         entity.tick(); // Required to set the full data for rendering
                     }

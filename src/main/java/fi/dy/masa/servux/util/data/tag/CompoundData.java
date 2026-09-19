@@ -18,13 +18,13 @@ import fi.dy.masa.servux.Servux;
 import fi.dy.masa.servux.util.data.Constants;
 import fi.dy.masa.servux.util.data.tag.converter.DataConverterNbt;
 import fi.dy.masa.servux.util.data.tag.util.DataOps;
+import fi.dy.masa.servux.util.data.tag.util.DataTypeUtils;
 import fi.dy.masa.servux.util.data.tag.util.SizeTracker;
-import fi.dy.masa.servux.util.log.AnsiLogger;
+import fi.dy.masa.servux.util.data.tag.util.SizeTrackerException;
 
 public class CompoundData extends BaseData implements DataView
 {
-	private static final AnsiLogger LOGGER = new AnsiLogger(CompoundData.class, true, true);
-
+//	private static final AnsiLogger LOGGER = new AnsiLogger(CompoundData.class, true, true);
     public static final String TAG_NAME = "TAG_Compound";
     private static final Pattern SIMPLE_VALUE = Pattern.compile("[A-Za-z0-9._+-]+");
 
@@ -53,6 +53,21 @@ public class CompoundData extends BaseData implements DataView
     public boolean isEmpty()
     {
         return this.values.isEmpty();
+    }
+
+    @Override
+    public int sizeInBytes()
+    {
+        long size = Byte.BYTES;
+
+        for (Map.Entry<String, BaseData> entry : this.values.entrySet())
+        {
+            size += Byte.BYTES;
+            size += Short.BYTES + DataTypeUtils.getUTFLength(entry.getKey());
+            size += entry.getValue().sizeInBytes();
+        }
+
+        return (int) Math.min(size, Integer.MAX_VALUE);
     }
 
     @Override
@@ -102,16 +117,17 @@ public class CompoundData extends BaseData implements DataView
     public boolean containsList(String key, int listEntryType)
     {
         BaseData data = this.values.get(key);
+        if (data == null) { return false; }
 
 		if (data.getType() == Constants.NBT.TAG_LIST &&
 			data instanceof ListData listData)
 		{
-			LOGGER.debug("containsList: req [{}], has [{}]", listEntryType, listData.getContainedType());
+//			LOGGER.debug("containsList: req [{}], has [{}]", listEntryType, listData.getContainedType());
 			return listData.getContainedType() == listEntryType;
 		}
 		else
 		{
-			LOGGER.debug("containsList: req [{}], has: [NULL] (Type found: '{}')", listEntryType, data.getType());
+//			LOGGER.debug("containsList: req [{}], has: [NULL] (Type found: '{}')", listEntryType, data.getType());
 			return false;
 		}
     }
@@ -145,6 +161,12 @@ public class CompoundData extends BaseData implements DataView
 
 		return Optional.empty();
 	}
+
+    @Override
+    public Optional<CompoundData> asCompound()
+    {
+        return Optional.of(this);
+    }
 
     @Override
     public boolean getBoolean(String key)
@@ -493,7 +515,7 @@ public class CompoundData extends BaseData implements DataView
     }
 
     @Override
-    public void write(DataOutput output) throws IOException
+    public void write(DataOutput output) throws IOException, SizeTrackerException
     {
         for (Map.Entry<String, BaseData> entry : this.values.entrySet())
         {
@@ -503,7 +525,8 @@ public class CompoundData extends BaseData implements DataView
         output.writeByte(Constants.NBT.TAG_END);
     }
 
-    public static CompoundData read(DataInput input, int depth, SizeTracker sizeTracker) throws IOException
+    public static CompoundData read(DataInput input, int depth, SizeTracker sizeTracker)
+            throws IOException, SizeTrackerException
     {
         if (depth > 512)
         {
@@ -515,7 +538,7 @@ public class CompoundData extends BaseData implements DataView
         while (true)
         {
             int tagType = input.readByte();
-            sizeTracker.increment(1);
+            sizeTracker.increment(Byte.BYTES);
 
             if (tagType == Constants.NBT.TAG_END)
             {
@@ -523,7 +546,7 @@ public class CompoundData extends BaseData implements DataView
             }
 
             String key = input.readUTF();
-            sizeTracker.increment(2 + key.length());
+            sizeTracker.increment(Short.BYTES + DataTypeUtils.getUTFLength(key));
 	        BaseData data;
 
 	        try
@@ -553,7 +576,8 @@ public class CompoundData extends BaseData implements DataView
         return SIMPLE_VALUE.matcher(str).matches() ? str : StringData.quoteAndEscape(str);
     }
 
-    public static void writeEntry(String key, BaseData data, DataOutput output) throws IOException
+    public static void writeEntry(String key, BaseData data, DataOutput output)
+            throws IOException, SizeTrackerException
     {
         output.writeByte(data.getType());
 

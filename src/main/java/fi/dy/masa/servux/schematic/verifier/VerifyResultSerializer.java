@@ -4,13 +4,16 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
+import javax.annotation.Nullable;
 import it.unimi.dsi.fastutil.objects.Object2IntOpenHashMap;
 
 import net.minecraft.core.BlockPos;
-import net.minecraft.nbt.CompoundTag;
-import net.minecraft.nbt.ListTag;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.state.BlockState;
+
+import fi.dy.masa.servux.util.data.tag.CompoundData;
+import fi.dy.masa.servux.util.data.tag.ListData;
 
 /**
  * Turns a {@link VerifyResult} into the batches that go over the wire.
@@ -65,9 +68,9 @@ public class VerifyResultSerializer
 	 * The final batch additionally carries the run's totals, so the client knows the
 	 * stream is complete and can fill in the summary counters in one go.
 	 */
-	public CompoundTag nextBatch(int maxPositions, java.util.UUID sessionId)
+	public CompoundData nextBatch(int maxPositions, UUID sessionId)
 	{
-		CompoundTag tag = new CompoundTag();
+		CompoundData tag = new CompoundData();
 		tag.putString("Task", "LitematicaVerifyResult");
 		tag.putIntArray("SessionId", uuidToIntArray(sessionId));
 		tag.putInt("Batch", this.batch);
@@ -77,7 +80,7 @@ public class VerifyResultSerializer
 		palette.defaultReturnValue(-1);
 		List<BlockState> paletteOrder = new ArrayList<>();
 
-		ListTag entries = new ListTag();
+		ListData entries = new ListData();
 		int budget = Math.max(1, maxPositions);
 
 		while (budget > 0 && this.pairIndex < this.pairs.size())
@@ -96,7 +99,7 @@ public class VerifyResultSerializer
 				encoded[i] = positions.get(this.positionIndex + i).asLong();
 			}
 
-			CompoundTag element = new CompoundTag();
+			CompoundData element = new CompoundData();
 			element.putString("Type", mismatch.type().getName());
 			element.putInt("Expected", paletteIndex(palette, paletteOrder, mismatch.expected()));
 			element.putInt("Found", paletteIndex(palette, paletteOrder, mismatch.found()));
@@ -136,9 +139,9 @@ public class VerifyResultSerializer
 		return tag;
 	}
 
-	private CompoundTag writeTotals()
+	private CompoundData writeTotals()
 	{
-		CompoundTag totals = new CompoundTag();
+		CompoundData totals = new CompoundData();
 
 		totals.putInt("SchematicBlocks", this.result.getSchematicBlocks());
 		totals.putInt("WorldBlocks", this.result.getWorldBlocks());
@@ -189,7 +192,7 @@ public class VerifyResultSerializer
 		return positions instanceof List<BlockPos> list ? list : new ArrayList<>(positions);
 	}
 
-	public static int[] uuidToIntArray(java.util.UUID uuid)
+	public static int[] uuidToIntArray(UUID uuid)
 	{
 		long most = uuid.getMostSignificantBits();
 		long least = uuid.getLeastSignificantBits();
@@ -197,14 +200,15 @@ public class VerifyResultSerializer
 		return new int[] {(int) (most >> 32), (int) most, (int) (least >> 32), (int) least};
 	}
 
-	public static java.util.UUID uuidFromIntArray(int[] array)
+	@Nullable
+	public static UUID uuidFromIntArray(@Nullable int[] array)
 	{
 		if (array == null || array.length != 4)
 		{
 			return null;
 		}
 
-		return new java.util.UUID((long) array[0] << 32 | (array[1] & 0xFFFFFFFFL),
-		                          (long) array[2] << 32 | (array[3] & 0xFFFFFFFFL));
+		return new UUID((long) array[0] << 32 | (array[1] & 0xFFFFFFFFL),
+		                (long) array[2] << 32 | (array[3] & 0xFFFFFFFFL));
 	}
 }

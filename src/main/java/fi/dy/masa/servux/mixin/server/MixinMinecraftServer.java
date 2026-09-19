@@ -31,8 +31,8 @@ public abstract class MixinMinecraftServer
     private void servux_onTickEnd(BooleanSupplier supplier, CallbackInfo ci, @Local ProfilerFiller profiler)
     {
         profiler.push("servux_tick");
-        DataProviderManager.INSTANCE.tickProviders((MinecraftServer) (Object) this, this.tickCount, profiler);
         TaskScheduler.getInstance().runTasks(profiler);
+        DataProviderManager.INSTANCE.tickProviders((MinecraftServer) (Object) this, this.tickCount, profiler);
         profiler.pop();
     }
 

@@ -3,13 +3,12 @@ package fi.dy.masa.servux.util;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.function.Predicate;
 import javax.annotation.Nullable;
 
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
-import net.minecraft.nbt.CompoundTag;
-import net.minecraft.nbt.ListTag;
 import net.minecraft.resources.Identifier;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntitySpawnReason;
@@ -19,14 +18,20 @@ import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.AABB;
 
+import fi.dy.masa.servux.Servux;
+import fi.dy.masa.servux.dataproviders.LitematicsDataProvider;
 import fi.dy.masa.servux.schematic.placement.SchematicPlacement;
 import fi.dy.masa.servux.schematic.placement.SubRegionPlacement;
+import fi.dy.masa.servux.util.data.Constants;
+import fi.dy.masa.servux.util.data.tag.CompoundData;
+import fi.dy.masa.servux.util.data.tag.ListData;
 import fi.dy.masa.servux.util.nbt.NbtView;
 import fi.dy.masa.servux.util.position.PositionUtils;
 
 public class EntityUtils
 {
     public static final Predicate<Entity> NOT_PLAYER = entity -> (entity instanceof Player) == false;
+    private static final ThreadLocalRandom RAND = ThreadLocalRandom.current();
 
     public static boolean isCreativeMode(Player player)
     {
@@ -85,7 +90,7 @@ public class EntityUtils
     }
 
     @Nullable
-    private static Entity createEntityFromNBTSingle(CompoundTag nbt, Level world)
+    private static Entity createEntityFromDataSingle(CompoundData nbt, Level world)
     {
         try
         {
@@ -95,7 +100,21 @@ public class EntityUtils
             if (optional.isPresent())
             {
                 Entity entity = optional.get();
-                entity.setUUID(UUID.randomUUID());
+
+                if (!nbt.containsLenient("UUID"))
+                {
+                    entity.setUUID(UUID.randomUUID());
+                }
+
+                if (nbt.contains("LastEntityID", Constants.NBT.TAG_INT))
+                {
+                    entity.setId(nbt.getIntOrDefault("LastEntityID", -1));
+                }
+                else
+                {
+                    entity.setId(RAND.nextInt(50000, Integer.MAX_VALUE));
+                }
+
                 return entity;
             }
         }
@@ -113,9 +132,9 @@ public class EntityUtils
      * @return ()
      */
     @Nullable
-    public static Entity createEntityAndPassengersFromNBT(CompoundTag nbt, Level world)
+    public static Entity createEntityAndPassengersFromData(CompoundData nbt, Level world)
     {
-        Entity entity = createEntityFromNBTSingle(nbt, world);
+        Entity entity = createEntityFromDataSingle(nbt, world);
 
         if (entity == null)
         {
@@ -123,13 +142,13 @@ public class EntityUtils
         }
         else
         {
-            if (nbt.contains("Passengers"))
+            if (nbt.containsList("Passengers", Constants.NBT.TAG_COMPOUND))
             {
-                ListTag taglist = nbt.getListOrEmpty("Passengers");
+                ListData taglist = nbt.getList("Passengers");
 
                 for (int i = 0; i < taglist.size(); ++i)
                 {
-                    Entity passenger = createEntityAndPassengersFromNBT(taglist.getCompoundOrEmpty(i), world);
+                    Entity passenger = createEntityAndPassengersFromData(taglist.getCompoundAt(i), world);
 
                     if (passenger != null)
                     {
@@ -144,7 +163,41 @@ public class EntityUtils
 
     public static void spawnEntityAndPassengersInWorld(Entity entity, Level world)
     {
-        if (world.addFreshEntity(entity) && entity.isVehicle())
+        boolean result;
+
+        Entity other = world.getEntity(entity.getId());
+
+        if (!LitematicsDataProvider.INSTANCE.shouldDeDuplicateEntities())
+        {
+            if (other != null)
+            {
+                // We don't like needing to use Random();
+                // but I guess there's no other logical method for this.
+                entity.setId(RAND.nextInt(entity.getId() * 4, Integer.MAX_VALUE));
+            }
+
+            other = world.getEntity(entity.getUUID());
+
+            if (other != null)
+            {
+                entity.setUUID(UUID.randomUUID());
+            }
+        }
+
+        try
+        {
+            result = world.addFreshEntity(entity);
+        }
+        catch (Exception e)
+        {
+            Servux.LOGGER.error("EntityUtils#spawnEntityAndPassengersInWorld(): Exception; id({}): [{}/{}]; {}",
+                                entity.getId(), entity.getStringUUID(),
+                                entity.getType().getDescription().getString(),
+                                e.getLocalizedMessage());
+            result = false;
+        }
+
+        if (result && entity.isVehicle())
         {
             for (Entity passenger : entity.getPassengers())
             {

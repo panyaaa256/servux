@@ -27,6 +27,8 @@ import fi.dy.masa.servux.schematic.placement.SubRegionPlacement;
 import fi.dy.masa.servux.schematic.verifier.VerifyMismatchType;
 import fi.dy.masa.servux.schematic.verifier.VerifyNbtComparator;
 import fi.dy.masa.servux.schematic.verifier.VerifyResult;
+import fi.dy.masa.servux.util.data.tag.CompoundData;
+import fi.dy.masa.servux.util.data.tag.converter.DataConverterNbt;
 import fi.dy.masa.servux.util.IntBoundingBox;
 import fi.dy.masa.servux.util.LayerRange;
 import fi.dy.masa.servux.util.position.PositionUtils;
@@ -78,7 +80,7 @@ public class SchematicVerifyUtils
 
 			if (placement != null && placement.isEnabled())
 			{
-				Map<BlockPos, CompoundTag> blockEntityMap = schematic.getBlockEntityMapForRegion(regionName);
+				Map<BlockPos, CompoundData> blockEntityMap = schematic.getBlockEntityMapForRegion(regionName);
 
 				if (verifyBlocksWithinChunk(world, chunkPos, regionName, container, blockEntityMap, origin,
 				                            schematicPlacement, placement, layerBehavior, layerRange,
@@ -95,7 +97,7 @@ public class SchematicVerifyUtils
 
 	public static boolean verifyBlocksWithinChunk(ServerLevel world, ChunkPos chunkPos, String regionName,
 	                                              LitematicaBlockStateContainer container,
-	                                              @Nullable Map<BlockPos, CompoundTag> blockEntityMap,
+	                                              @Nullable Map<BlockPos, CompoundData> blockEntityMap,
 	                                              BlockPos origin,
 	                                              SchematicPlacement schematicPlacement,
 	                                              SubRegionPlacement placement,
@@ -184,7 +186,7 @@ public class SchematicVerifyUtils
 					}
 
 					posMutable.set(x, y, z);
-					CompoundTag teNBT = blockEntityMap != null ? blockEntityMap.get(posMutable) : null;
+					CompoundData teNBT = blockEntityMap != null ? blockEntityMap.get(posMutable) : null;
 					BlockPos origPos = posMutable.immutable();
 
 					posMutable.set(posMinRelMinusRegX + x,
@@ -288,7 +290,7 @@ public class SchematicVerifyUtils
 	 */
 	private static void verifyBlockEntity(ServerLevel world, BlockPos pos,
 	                                      BlockState expected, BlockState found,
-	                                      @Nullable CompoundTag expectedNbt,
+	                                      @Nullable CompoundData expectedNbt,
 	                                      VerifyResult result,
 	                                      VerifyNbtComparator comparator)
 	{
@@ -304,6 +306,8 @@ public class SchematicVerifyUtils
 			return;
 		}
 
+		// The comparator works on vanilla tags so that it is identical across branches
+		CompoundTag expectedTag = expectedNbt != null ? DataConverterNbt.toVanillaCompound(expectedNbt) : null;
 		CompoundTag foundTag;
 
 		try
@@ -316,7 +320,7 @@ public class SchematicVerifyUtils
 			return;
 		}
 
-		if (comparator.isComparable(expectedNbt, foundTag) && comparator.differs(expectedNbt, foundTag))
+		if (comparator.isComparable(expectedTag, foundTag) && comparator.differs(expectedTag, foundTag))
 		{
 			result.add(VerifyMismatchType.WRONG_NBT, expected, found, pos);
 		}

@@ -3,10 +3,8 @@ package fi.dy.masa.servux.scheduler.tasks;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
-import java.util.Set;
 import javax.annotation.Nullable;
 import com.google.common.collect.ArrayListMultimap;
-import com.google.common.collect.ImmutableList;
 
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.util.Util;
@@ -18,27 +16,23 @@ import fi.dy.masa.servux.schematic.placement.SchematicPlacement;
 import fi.dy.masa.servux.schematic.verifier.VerifyChunkLoader;
 import fi.dy.masa.servux.schematic.verifier.VerifyNbtComparator;
 import fi.dy.masa.servux.schematic.verifier.VerifyResult;
-import fi.dy.masa.servux.util.IntBoundingBox;
-import fi.dy.masa.servux.util.LayerRange;
 import fi.dy.masa.servux.util.PasteLayerBehavior;
+import fi.dy.masa.servux.util.ReplaceBehavior;
 import fi.dy.masa.servux.util.SchematicVerifyUtils;
-import fi.dy.masa.servux.util.position.PositionUtils;
+import fi.dy.masa.servux.util.LayerRange;
 
 /**
  * Walks a placement chunk by chunk and classifies every block against the world.
  * <p>
- * On the 26.1+ branch this extends {@code TaskPasteSchematicPerChunkBase} to inherit its
- * chunk partitioning. That class does not exist here, and backporting it would drag the
- * whole paste rewrite onto an LTS branch that deliberately still uses the direct
- * {@code pasteTo()} path, so {@link #init()} and {@link #addPlacement} are carried here
- * instead - copied from upstream so the two stay comparable.
+ * Extends the paste base purely to inherit its {@code init()}/{@code addPlacement()} chunk
+ * partitioning; the inherited {@code replaceBehavior} is unused for a read-only pass.
  * <p>
  * Chunk loading policy: this task only reads chunks that are <i>already</i> loaded, and
  * only the chunk being processed (unlike a paste, which needs the 3x3 neighbourhood for
  * block updates). Chunks that never become available are reported as unloaded rather than
  * being force-loaded, so a verification can never stall the server or touch world gen.
  */
-public class TaskVerifySchematicPerChunk extends TaskProcessChunkBase
+public class TaskVerifySchematicPerChunk extends TaskPasteSchematicPerChunkBase
 {
 	/**
 	 * How many consecutive ticks without progress to tolerate before declaring the
@@ -57,9 +51,6 @@ public class TaskVerifySchematicPerChunk extends TaskProcessChunkBase
 	/** How often to emit a progress ping, in ticks. */
 	private static final int PROGRESS_TICK_INTERVAL = 20;
 
-	protected final ImmutableList<SchematicPlacement> placements;
-	protected final LayerRange layerRange;
-	protected final PasteLayerBehavior layerBehavior;
 
 	private final ArrayListMultimap<ChunkPos, SchematicPlacement> placementsPerChunk = ArrayListMultimap.create();
 	private final VerifyResult result;
@@ -84,17 +75,14 @@ public class TaskVerifySchematicPerChunk extends TaskProcessChunkBase
 	                                   int pauseMsptThreshold,
 	                                   @Nullable Runnable onComplete)
 	{
-		super(context);
+		super(context, placements, range != null ? range : new LayerRange(), ReplaceBehavior.NONE, layerBehavior,
+		      false, false, false);
 
-		this.placements = ImmutableList.copyOf(placements);
-		this.layerRange = range != null ? range : new LayerRange();
-		this.layerBehavior = layerBehavior;
 		this.result = result;
 		this.chunkLoader = chunkLoader;
 		this.nbtComparator = nbtComparator;
 		this.pauseMsptThreshold = pauseMsptThreshold;
 		this.onComplete = onComplete;
-		this.name = "verify";
 	}
 
 	public VerifyResult getResult()
@@ -131,64 +119,37 @@ public class TaskVerifySchematicPerChunk extends TaskProcessChunkBase
 	@Override
 	public void init()
 	{
-		for (SchematicPlacement placement : this.placements)
-		{
-			this.addPlacement(placement, this.layerRange);
-		}
-
-		this.pendingChunks.clear();
-		this.pendingChunks.addAll(this.boxesInChunks.keySet());
-		this.sortChunkList();
+		super.init();
 
 		this.result.setTotalChunks(this.pendingChunks.size());
-	}
-
-	protected void addPlacement(SchematicPlacement placement, LayerRange range)
-	{
-		Set<ChunkPos> touchedChunks = placement.getTouchedChunks();
-
-		for (ChunkPos pos : touchedChunks)
-		{
-			int count = 0;
-
-			for (IntBoundingBox box : placement.getBoxesWithinChunk(pos.x, pos.z).values())
-			{
-				box = PositionUtils.getClampedBox(box, range);
-
-				if (box != null)
-				{
-					// Clamp the box to the world bounds
-					box = PositionUtils.clampBoxToWorldHeightRange(box, this.context.world());
-
-					if (box != null)
-					{
-						this.boxesInChunks.put(pos, box);
-						++count;
-					}
-				}
-			}
-
-			if (count > 0)
-			{
-				this.placementsPerChunk.put(pos, placement);
-			}
-		}
 	}
 
 	@Override
 	public boolean canExecute()
 	{
-		return super.canExecute() && this.context.world() != null && !this.cancelled;
+		return super.canExecute() && this.context.level() != null && !this.cancelled;
+	}
+
+	@Override
+	protected void onChunkAddedForHandling(ChunkPos pos, SchematicPlacement placement)
+	{
+		super.onChunkAddedForHandling(pos, placement);
+
+		this.placementsPerChunk.put(pos, placement);
 	}
 
 	/**
 	 * Only the chunk itself has to be present; verification reads block states and never
-	 * triggers neighbour updates, so a paste's 3x3 requirement does not apply.
+	 * triggers neighbour updates, so the paste base's 3x3 requirement does not apply.
+	 * <p>
+	 * With force loading enabled this also drives the load: it asks the loader to bring
+	 * the chunk in and returns true only once it is actually readable, so the caller
+	 * reads it during the very tick it became available.
 	 */
 	@Override
 	protected boolean canProcessChunk(ChunkPos pos)
 	{
-		if (this.isServerChunkLoaded(this.context.world(), pos.x, pos.z))
+		if (this.isServerChunkLoaded(this.context.level(), pos.x, pos.z))
 		{
 			return true;
 		}
@@ -198,9 +159,6 @@ public class TaskVerifySchematicPerChunk extends TaskProcessChunkBase
 			return false;
 		}
 
-		// With force loading on, this also drives the load: it asks the loader to bring
-		// the chunk in and reports READY only once it is actually readable, so the caller
-		// reads it during the very tick it became available.
 		VerifyChunkLoader.Result result = this.chunkLoader.request(pos);
 
 		if (result == VerifyChunkLoader.Result.UNGENERATED)
@@ -361,7 +319,7 @@ public class TaskVerifySchematicPerChunk extends TaskProcessChunkBase
 
 		for (SchematicPlacement placement : placements)
 		{
-			SchematicVerifyUtils.verifyWorldWithinChunk(this.context.world(), pos, placement,
+			SchematicVerifyUtils.verifyWorldWithinChunk(this.context.level(), pos, placement,
 			                                            this.layerBehavior, this.layerRange,
 			                                            this.result, this.nbtComparator);
 

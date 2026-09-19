@@ -24,11 +24,11 @@ import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.Mirror;
 import net.minecraft.world.level.block.Rotation;
 
-import fi.dy.masa.servux.Reference;
 import fi.dy.masa.servux.Servux;
 import fi.dy.masa.servux.schematic.LitematicaSchematic;
 import fi.dy.masa.servux.schematic.placement.SchematicPlacement;
-import fi.dy.masa.servux.util.JsonUtils;
+import fi.dy.masa.servux.util.FileUtils;
+import fi.dy.masa.servux.util.data.json.JsonUtils;
 
 /**
  * Read-only bridge to schematics shared through Syncmatica.
@@ -100,7 +100,7 @@ public class SyncmaticaBridge
 	 */
 	public Path getSchematicDir()
 	{
-		return Reference.DEFAULT_RUN_DIR.resolve("syncmatics").normalize();
+		return FileUtils.getMinecraftDirectory().resolve("syncmatics").normalize();
 	}
 
 	/**
@@ -394,8 +394,7 @@ public class SyncmaticaBridge
 			return null;
 		}
 
-		// Entities are ignored: verification only compares block states
-		SchematicPlacement placement = SchematicPlacement.createFor(schematic, info.origin(), info.displayName(), true);
+		SchematicPlacement placement = SchematicPlacement.createFor(schematic, info.origin(), info.displayName(), true, info.id());
 
 		placement.setRotation(info.rotation());
 		placement.setMirror(info.mirror());

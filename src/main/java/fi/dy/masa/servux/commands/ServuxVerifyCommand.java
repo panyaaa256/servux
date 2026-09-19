@@ -28,7 +28,7 @@ import fi.dy.masa.servux.schematic.verifier.VerifyMismatchType;
 import fi.dy.masa.servux.schematic.verifier.VerifyReport;
 import fi.dy.masa.servux.schematic.verifier.VerifySession;
 import fi.dy.masa.servux.schematic.verifier.VerifySessionManager;
-import me.lucko.fabric.api.permissions.v0.Permissions;
+import fi.dy.masa.servux.util.PermissionsUtil;
 import fi.dy.masa.servux.util.StringUtils;
 
 /**
@@ -44,7 +44,7 @@ public class ServuxVerifyCommand
 	public static ArgumentBuilder<CommandSourceStack, ?> build()
 	{
 		return Commands.literal("verify")
-		               .requires(Permissions.require(Reference.MOD_ID + ".commands.verify", 4))
+		               .requires(PermissionsUtil.require(Reference.MOD_ID + ".commands.verify", 4))
 		               .then(Commands.literal("list").executes(ServuxVerifyCommand::listPlacements))
 		               .then(Commands.literal("start")
 		                             .then(Commands.argument("placement", StringArgumentType.greedyString())
