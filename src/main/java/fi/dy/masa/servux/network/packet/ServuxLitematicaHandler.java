@@ -180,7 +180,12 @@ public abstract class ServuxLitematicaHandler<T extends CustomPacketPayload> imp
 
 	private void handleBulkData(ServerPlayer player, CompoundData data, final int packetSize)
 	{
-		String task = data.getStringOrDefault("Task", "LitematicaPaste");
+		// Absent rather than defaulted: a client that predates task routing sends a paste
+		// with no Task key at all, so "missing" has to stay distinguishable from "named
+		// something we do not know". The former is a paste; the latter is a request from a
+		// newer client that we must decline rather than guess at - silently pasting a
+		// payload that asked for something else would be the worst possible reading of it.
+		String task = data.getStringOrDefault("Task", "");
 		Servux.debugLog("handleBulkData: received task: {} from {} [Bytes: {} / {}]", task, player.getName().getString(), packetSize, data.sizeInBytes());
 
 		// The Task string used to be read but never branched on, which routed every bulk
@@ -188,6 +193,7 @@ public abstract class ServuxLitematicaHandler<T extends CustomPacketPayload> imp
 		switch (task)
 		{
 			case "LitematicaVerify" -> LitematicsDataProvider.INSTANCE.handleClientVerifyRequest(player, data);
+			case "", "LitematicaPaste" -> LitematicsDataProvider.INSTANCE.handleClientPasteRequest(player, data);
 
 			// For future Granular Task Management
 //            // File-Transmit support
@@ -202,7 +208,7 @@ public abstract class ServuxLitematicaHandler<T extends CustomPacketPayload> imp
 //                }
 //            }
 
-			default -> LitematicsDataProvider.INSTANCE.handleClientPasteRequest(player, data);
+			default -> Servux.LOGGER.warn("handleBulkData(): unknown task '{}' from player {}; ignoring it. The client is likely newer than this Servux.", task, player.getName().tryCollapseToString());
 		}
 	}
 
