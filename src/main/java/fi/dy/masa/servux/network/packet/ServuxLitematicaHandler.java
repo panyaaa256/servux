@@ -193,6 +193,8 @@ public abstract class ServuxLitematicaHandler<T extends CustomPacketPayload> imp
 		switch (task)
 		{
 			case "LitematicaVerify" -> LitematicsDataProvider.INSTANCE.handleClientVerifyRequest(player, data);
+			case "LitematicaAnalyze" -> LitematicsDataProvider.INSTANCE.handleClientAnalyzeRequest(player, data);
+			case "LitematicaMaterials" -> LitematicsDataProvider.INSTANCE.handleClientMaterialListRequest(player, data);
 			case "", "LitematicaPaste" -> LitematicsDataProvider.INSTANCE.handleClientPasteRequest(player, data);
 
 			// For future Granular Task Management

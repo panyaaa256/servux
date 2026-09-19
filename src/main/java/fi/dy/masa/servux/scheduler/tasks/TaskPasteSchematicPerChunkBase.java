@@ -1,7 +1,6 @@
 package fi.dy.masa.servux.scheduler.tasks;
 
 import java.util.Collection;
-import java.util.Set;
 import com.google.common.collect.ImmutableList;
 
 import net.minecraft.world.level.ChunkPos;
@@ -10,9 +9,8 @@ import fi.dy.masa.servux.scheduler.TaskContext;
 import fi.dy.masa.servux.schematic.placement.SchematicPlacement;
 import fi.dy.masa.servux.util.PasteLayerBehavior;
 import fi.dy.masa.servux.util.ReplaceBehavior;
-import fi.dy.masa.servux.util.IntBoundingBox;
 import fi.dy.masa.servux.util.LayerRange;
-import fi.dy.masa.servux.util.position.PositionUtils;
+import fi.dy.masa.servux.util.SchematicChunkPartitioner;
 
 public abstract class TaskPasteSchematicPerChunkBase extends TaskProcessChunkMultiPhase
 {
@@ -59,36 +57,9 @@ public abstract class TaskPasteSchematicPerChunkBase extends TaskProcessChunkMul
 
 	protected void addPlacement(SchematicPlacement placement, LayerRange range)
 	{
-		Set<ChunkPos> touchedChunks = placement.getTouchedChunks();
-
-		for (ChunkPos pos : touchedChunks)
-		{
-			int count = 0;
-
-			for (IntBoundingBox box : placement.getBoxesWithinChunk(pos.x, pos.z).values())
-			{
-				box = PositionUtils.getClampedBox(box, range);
-
-				if (box != null)
-				{
-					// Clamp the box to the world bounds.
-					// This is also important for the fill-based strip generation code to not
-					// overflow the work array bounds.
-					box = PositionUtils.clampBoxToWorldHeightRange(box, this.context.level());
-
-					if (box != null)
-					{
-						this.boxesInChunks.put(pos, box);
-						++count;
-					}
-				}
-			}
-
-			if (count > 0)
-			{
-				this.onChunkAddedForHandling(pos, placement);
-			}
-		}
+		SchematicChunkPartitioner.partition(placement, range, this.context.level(),
+		                                    this.boxesInChunks::put,
+		                                    pos -> this.onChunkAddedForHandling(pos, placement));
 	}
 
 	protected void onChunkAddedForHandling(ChunkPos pos, SchematicPlacement placement)

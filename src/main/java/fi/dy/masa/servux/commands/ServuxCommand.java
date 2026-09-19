@@ -85,6 +85,8 @@ public class ServuxCommand implements IServerCommand
                                                                                           return configList(ctx, dataProvider.get().getSettings());
                                                                                       })))
                                     .then(ServuxVerifyCommand.build())
+                                    .then(ServuxAnalyzeCommand.build())
+                                    .then(ServuxMaterialListCommand.build())
                                     .then(Commands.literal("search")
                                                         .requires(Permissions.require(Reference.MOD_ID + ".commands.list", 4))
                                                         .then(Commands.argument("query", StringArgumentType.greedyString())

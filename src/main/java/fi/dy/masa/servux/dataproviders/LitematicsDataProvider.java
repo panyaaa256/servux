@@ -5,6 +5,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.*;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
 import javax.annotation.Nullable;
 import org.apache.commons.lang3.tuple.Pair;
 import org.jetbrains.annotations.ApiStatus;
@@ -17,6 +18,7 @@ import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.level.ChunkPos;
+import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.chunk.LevelChunk;
@@ -30,27 +32,40 @@ import fi.dy.masa.servux.network.ServerPlayHandler;
 import fi.dy.masa.servux.network.packet.ServuxLitematicaHandler;
 import fi.dy.masa.servux.network.packet.ServuxLitematicaPacket;
 import fi.dy.masa.servux.scheduler.TaskContext;
+import fi.dy.masa.servux.scheduler.session.IResultBatcher;
+import fi.dy.masa.servux.scheduler.session.ServerTaskKind;
+import fi.dy.masa.servux.scheduler.session.ServerTaskSession;
+import fi.dy.masa.servux.scheduler.session.ServerTaskSessionManager;
 import fi.dy.masa.servux.scheduler.TaskScheduler;
+import fi.dy.masa.servux.scheduler.tasks.TaskAnalyzeArea;
 import fi.dy.masa.servux.scheduler.tasks.TaskDeleteArea;
 import fi.dy.masa.servux.scheduler.tasks.TaskFillArea;
+import fi.dy.masa.servux.scheduler.tasks.TaskMaterialListPlacement;
 import fi.dy.masa.servux.scheduler.tasks.TaskPasteSchematicPerChunkBase;
 import fi.dy.masa.servux.scheduler.tasks.TaskPasteSchematicPerChunkDirect;
+import fi.dy.masa.servux.scheduler.tasks.TaskSaveSchematic;
 import fi.dy.masa.servux.scheduler.tasks.TaskVerifySchematicPerChunk;
 import fi.dy.masa.servux.schematic.LitematicaSchematic;
+import fi.dy.masa.servux.schematic.analyzer.AnalyzeResult;
+import fi.dy.masa.servux.schematic.analyzer.AnalyzeResultSerializer;
+import fi.dy.masa.servux.schematic.analyzer.AnalyzeSession;
+import fi.dy.masa.servux.schematic.materials.MaterialListResult;
+import fi.dy.masa.servux.schematic.materials.MaterialListResultSerializer;
+import fi.dy.masa.servux.schematic.materials.MaterialListSession;
 import fi.dy.masa.servux.schematic.placement.SchematicPlacement;
+import fi.dy.masa.servux.schematic.selection.AreaSelection;
 import fi.dy.masa.servux.schematic.selection.Box;
 import fi.dy.masa.servux.schematic.transmit.SchematicBufferManager;
-import fi.dy.masa.servux.schematic.verifier.VerifyChunkLoader;
 import fi.dy.masa.servux.schematic.verifier.VerifyNbtComparator;
 import fi.dy.masa.servux.schematic.verifier.VerifyReport;
 import fi.dy.masa.servux.schematic.verifier.VerifyResult;
 import fi.dy.masa.servux.schematic.verifier.VerifyResultSerializer;
 import fi.dy.masa.servux.schematic.verifier.VerifySession;
-import fi.dy.masa.servux.schematic.verifier.VerifySessionManager;
 import fi.dy.masa.servux.settings.IServuxSetting;
 import fi.dy.masa.servux.settings.ServuxBoolSetting;
 import fi.dy.masa.servux.settings.ServuxIntSetting;
 import fi.dy.masa.servux.util.*;
+import fi.dy.masa.servux.util.chunk.ServerChunkLoader;
 import fi.dy.masa.servux.util.data.Constants;
 import fi.dy.masa.servux.util.data.tag.BaseData;
 import fi.dy.masa.servux.util.data.tag.CompoundData;
@@ -71,43 +86,62 @@ public class LitematicsDataProvider extends DataProviderBase
 	private final ServuxIntSetting pastePermissionLevel = new ServuxIntSetting(this, "permission_level_paste", 0, 4, 0);
 	private final ServuxIntSetting taskPermissionLevel = new ServuxIntSetting(this, "permission_level_tasks", 0, 4, 0);
 	private final ServuxIntSetting verifyPermissionLevel = new ServuxIntSetting(this, "permission_level_verify", 0, 4, 0);
+	private final ServuxIntSetting analyzePermissionLevel = new ServuxIntSetting(this, "permission_level_analyze", 0, 4, 0);
+	private final ServuxIntSetting materialsPermissionLevel = new ServuxIntSetting(this, "permission_level_materials", 0, 4, 0);
 	private final ServuxBoolSetting playerTaskFeedback = new ServuxBoolSetting(this, "player_task_feedback", false);
 	public final ServuxBoolSetting fixRaiLRotations = new ServuxBoolSetting(this, "fix_rail_rotations", true);
 	public final ServuxBoolSetting fixStairMirror = new ServuxBoolSetting(this, "fix_stairs_mirror", true);
 	public final ServuxBoolSetting fixChestMirror = new ServuxBoolSetting(this, "fix_chest_mirror", true);
 	public final ServuxBoolSetting deDuplicateSchematicEntities = new ServuxBoolSetting(this, "deduplicate_schematic_entities", false);
 	public final ServuxIntSetting verifyMaxResultPositions = new ServuxIntSetting(this, "verify_max_result_positions", 200000, 10000000, 0);
-	public final ServuxIntSetting verifyBatchPositions = new ServuxIntSetting(this, "verify_batch_positions", 16384, 262144, 256);
-	public final ServuxIntSetting verifySessionTimeout = new ServuxIntSetting(this, "verify_session_timeout", 300, 86400, 0);
+	public final ServuxIntSetting taskBatchPositions = new ServuxIntSetting(this, "task_batch_positions", 16384, 262144, 256);
+	public final ServuxIntSetting taskSessionTimeout = new ServuxIntSetting(this, "task_session_timeout", 300, 86400, 0);
 	public final ServuxBoolSetting verifySyncmaticaInterop = new ServuxBoolSetting(this, "verify_syncmatica_interop", true);
-	public final ServuxBoolSetting verifyForceLoadChunks = new ServuxBoolSetting(this, "verify_force_load_chunks", true);
-	public final ServuxBoolSetting verifyGenerateMissingChunks = new ServuxBoolSetting(this, "verify_generate_missing_chunks", false);
-	public final ServuxIntSetting verifyMaxChunkLoadsPerTick = new ServuxIntSetting(this, "verify_max_chunk_loads_per_tick", 2, 16, 1);
-	public final ServuxIntSetting verifyPauseMsptThreshold = new ServuxIntSetting(this, "verify_pause_mspt_threshold", 45, 1000, 0);
+	public final ServuxBoolSetting chunkWalkForceLoadChunks = new ServuxBoolSetting(this, "chunk_walk_force_load_chunks", true);
+	public final ServuxBoolSetting chunkWalkGenerateMissingChunks = new ServuxBoolSetting(this, "chunk_walk_generate_missing_chunks", false);
+	/**
+	 * Shared by every chunk walking task, not just verification: a verify, an area
+	 * analysis and a server side save all pull chunks in through the same loader, so
+	 * they answer to the same budget.
+	 */
+	public final ServuxIntSetting chunkWalkMaxLoadsPerTick = new ServuxIntSetting(this, "chunk_walk_max_loads_per_tick", 2, 16, 1);
+	public final ServuxIntSetting chunkWalkPauseMsptThreshold = new ServuxIntSetting(this, "chunk_walk_pause_mspt_threshold", 45, 1000, 0);
 	public final ServuxBoolSetting verifyNbt = new ServuxBoolSetting(this, "verify_nbt", true);
 	public final ServuxBoolSetting verifyNbtSlotExact = new ServuxBoolSetting(this, "verify_nbt_slot_exact", false);
 	public final ServuxBoolSetting verifyNbtStrict = new ServuxBoolSetting(this, "verify_nbt_strict", false);
+	/**
+	 * Cap on the volume one analysis may cover, in blocks. An analysis reads every position
+	 * in the area, so an unbounded selection is an unbounded amount of work; 0 lifts the cap.
+	 * The default is a 512x256x512 region, which is already far beyond a normal build.
+	 */
+	public final ServuxIntSetting analyzeMaxVolume = new ServuxIntSetting(this, "analyze_max_volume", 67108864, Integer.MAX_VALUE, 0);
+	/** Reading every container in an area is the expensive part; allow it to be turned off. */
+	public final ServuxBoolSetting analyzeContainers = new ServuxBoolSetting(this, "analyze_containers", true);
 	private final List<IServuxSetting<?>> settings = List.of(
 			this.permissionLevel,
 			this.pastePermissionLevel,
 			this.taskPermissionLevel,
 			this.verifyPermissionLevel,
+			this.analyzePermissionLevel,
+			this.materialsPermissionLevel,
 			this.playerTaskFeedback,
 			this.fixRaiLRotations,
 			this.fixStairMirror,
 			this.fixChestMirror,
 			this.deDuplicateSchematicEntities,
 			this.verifyMaxResultPositions,
-			this.verifyBatchPositions,
-			this.verifySessionTimeout,
+			this.taskBatchPositions,
+			this.taskSessionTimeout,
 			this.verifySyncmaticaInterop,
-			this.verifyForceLoadChunks,
-			this.verifyGenerateMissingChunks,
-			this.verifyMaxChunkLoadsPerTick,
-			this.verifyPauseMsptThreshold,
+			this.chunkWalkForceLoadChunks,
+			this.chunkWalkGenerateMissingChunks,
+			this.chunkWalkMaxLoadsPerTick,
+			this.chunkWalkPauseMsptThreshold,
 			this.verifyNbt,
 			this.verifyNbtSlotExact,
-			this.verifyNbtStrict
+			this.verifyNbtStrict,
+			this.analyzeMaxVolume,
+			this.analyzeContainers
 	);
 
 	private final List<UUID> registeredPlayers = new ArrayList<>();
@@ -134,6 +168,8 @@ public class LitematicsDataProvider extends DataProviderBase
 		ListData features = new ListData();
 		features.add(new StringData("verify"));
 		features.add(new StringData("verify_nbt"));
+		features.add(new StringData(ServerTaskKind.ANALYZE.getName()));
+		features.add(new StringData(ServerTaskKind.MATERIALS.getName()));
 		this.metadata.put("Features", features);
 
 		// Litematic-Transmit Dir
@@ -308,9 +344,12 @@ public class LitematicsDataProvider extends DataProviderBase
 	}
 
 	/**
-	 * Handles the C2S task requests, including the small control messages that drive
-	 * the verify result stream: the batch acknowledgements that pull the next batch
-	 * out of the server.
+	 * Handles the C2S task requests: the fire-and-forget ones the task manager runs
+	 * (Fill, Delete), and the small control messages that drive a session's result
+	 * stream - the batch acknowledgements that pull the next batch out of the server.
+	 * <p>
+	 * Which kind of session is being acknowledged is decided by the {@code Task} string
+	 * alone; an unrecognised one is dropped rather than guessed at.
 	 */
 	@ApiStatus.Experimental
 	public void onTaskRequest(ServerPlayer player, CompoundData tags)
@@ -325,30 +364,18 @@ public class LitematicsDataProvider extends DataProviderBase
 		ServerLevel level = player.level();
 		Servux.debugLog("litematic_data: Received TaskRequest from player {} of type: [{}]", player.getName().getString(), taskType);
 
+		// A batch acknowledgement for one of the session driven tasks. Those carry their own
+		// dispatch because a session, not a Task string, decides what happens next.
+		ServerTaskKind kind = ServerTaskKind.byAckTask(taskType);
+
+		if (kind != null)
+		{
+			this.onSessionAck(player, tags, kind);
+			return;
+		}
+
 		switch (taskType)
 		{
-			case "LitematicaVerifyAck" ->
-			{
-				if (!this.hasPermissionsForVerify(player))
-				{
-					Servux.debugLog("litematic_data: Denying onTaskRequest from player {}, Insufficient Permissions for Verify Task.", player.getName().getString());
-					player.sendSystemMessage(StringUtils.translate("servux.litematics.error.insufficent_for_verify"));
-
-					return;
-				}
-
-				VerifySession session = this.getOwnedSession(player, tags);
-
-				if (session == null)
-				{
-					return;
-				}
-
-				// -1 rather than getInt()'s 0, so that "absent" stays distinguishable from batch 0
-				session.setAcknowledgedBatch(tags.contains("Batch", Constants.NBT.TAG_INT) ? tags.getInt("Batch") : -1);
-				this.sendNextVerifyBatch(player, session);
-			}
-
 			case "Fill" ->
 			{
 				if (!this.hasPermissionsForTask(player, "fill"))
@@ -493,6 +520,32 @@ public class LitematicsDataProvider extends DataProviderBase
 		}
 	}
 
+	/** Pulls the next result batch out of a session, once the client says it took the last. */
+	private void onSessionAck(ServerPlayer player, CompoundData tags, ServerTaskKind kind)
+	{
+		if (!this.hasPermissionFor(player, kind))
+		{
+			Servux.debugLog("litematic_data: Denying onTaskRequest ({}) from player {}, Insufficient Permissions.", kind.getName(), player.getName().getString());
+			return;
+		}
+
+		ServerTaskSession session = this.getOwnedSession(player, tags, kind);
+
+		if (session == null)
+		{
+			return;
+		}
+
+		// -1 rather than getInt()'s 0, so that "absent" stays distinguishable from batch 0
+		session.setAcknowledgedBatch(tags.contains("Batch", Constants.NBT.TAG_INT) ? tags.getInt("Batch") : -1);
+		this.sendNextBatch(player, session);
+	}
+
+	/**
+	 * Forwards a task's progress to its player. Called from inside the server by
+	 * {@code InfoHudSync}, not by a client - the C2S side of the task protocol is
+	 * {@link #onTaskRequest}.
+	 */
 	public void onTaskStatusSync(ServerPlayer player, CompoundData tags)
 	{
 		if (!this.isPlayerRegistered(player) || !this.isEnabled() ||
@@ -510,7 +563,7 @@ public class LitematicsDataProvider extends DataProviderBase
 		HANDLER.encodeServerData(player, ServuxLitematicaPacket.TaskStatusSync(tags));
 	}
 
-	/** Handles a client asking to abandon its verification. */
+	/** Handles a client asking to abandon one of its runs. */
 	@ApiStatus.Experimental
 	public void onTaskCancel(ServerPlayer player, CompoundData tags)
 	{
@@ -519,34 +572,36 @@ public class LitematicsDataProvider extends DataProviderBase
 			return;
 		}
 
-		if (!this.hasPermissionsForVerify(player))
+		ServerTaskKind kind = ServerTaskKind.byCancelTask(tags.getStringOrDefault("Task", ""));
+
+		if (kind == null)
 		{
-			Servux.debugLog("litematic_data: Denying onTaskCancel from player {}, Insufficient Permissions.", player.getName().getString());
 			return;
 		}
 
-		if (!tags.getString("Task").equals("LitematicaVerifyCancel"))
+		if (!this.hasPermissionFor(player, kind))
 		{
-			// TODO (For things like Delete, Fill, etc)
+			Servux.debugLog("litematic_data: Denying onTaskCancel ({}) from player {}, Insufficient Permissions.", kind.getName(), player.getName().getString());
 			return;
 		}
 
-		VerifySession session = this.getOwnedSession(player, tags);
+		ServerTaskSession session = this.getOwnedSession(player, tags, kind);
 
 		if (session != null)
 		{
-			Servux.debugLog("litematic_data: verify session {} cancelled by the client", session.getSessionId());
+			Servux.debugLog("litematic_data: {} session {} cancelled by the client", kind.getName(), session.getSessionId());
 			session.cancel();
-			VerifySessionManager.INSTANCE.remove(session.getSessionId());
+			ServerTaskSessionManager.INSTANCE.remove(session.getSessionId());
 		}
 	}
 
 	/**
-	 * Looks a session up and checks it belongs to the asking player, so that one client
-	 * cannot drive or cancel another's verification.
+	 * Looks a session up and checks it belongs to the asking player and is of the kind the
+	 * message claims, so that one client cannot drive or cancel another's run - or steer a
+	 * reply for one kind of task into a session of another.
 	 */
 	@Nullable
-	private VerifySession getOwnedSession(ServerPlayer player, CompoundData tags)
+	private ServerTaskSession getOwnedSession(ServerPlayer player, CompoundData tags, ServerTaskKind kind)
 	{
 		UUID sessionId = VerifyResultSerializer.uuidFromIntArray(tags.getIntArray("SessionId"));
 
@@ -555,33 +610,92 @@ public class LitematicsDataProvider extends DataProviderBase
 			return null;
 		}
 
-		VerifySession session = VerifySessionManager.INSTANCE.get(sessionId);
+		ServerTaskSession session = ServerTaskSessionManager.INSTANCE.get(sessionId);
 
-		return session != null && session.getOwner().equals(player.getUUID()) ? session : null;
+		return session != null && session.getKind() == kind && session.getOwner().equals(player.getUUID())
+		       ? session : null;
 	}
 
-	/** Called when verification finishes: switches the session over to handing out batches. */
-	private void beginStreaming(VerifySession session)
+	/**
+	 * The player a chunk walking task will run for.
+	 * <p>
+	 * A task needs one: {@code TaskBase} reads the player's position to sort chunks
+	 * closest-first, and the progress pings go to that player. A command gives one through
+	 * its source; a packet driven request has no source at all, so the requester - who by
+	 * definition is a player, since the packet came from them - is looked up by owner
+	 * instead. Without that, every packet driven verify, analysis and material list would
+	 * refuse to start.
+	 *
+	 * @return null for a console or command block source, which has no player either way
+	 */
+	@Nullable
+	private ServerPlayer taskPlayerFor(ServerLevel level, UUID owner, @Nullable CommandSourceStack source)
+	{
+		if (source != null)
+		{
+			return source.getPlayer();
+		}
+
+		return owner.equals(ServerTaskSession.CONSOLE_OWNER)
+		       ? null : level.getServer().getPlayerList().getPlayer(owner);
+	}
+
+	/** The permission gate for each kind of server side task. */
+	private boolean hasPermissionFor(ServerPlayer player, ServerTaskKind kind)
+	{
+		return switch (kind)
+		{
+			case VERIFY -> this.hasPermissionsForVerify(player);
+			case ANALYZE -> this.hasPermissionsForAnalyze(player);
+			case MATERIALS -> this.hasPermissionsForMaterials(player);
+		};
+	}
+
+	/**
+	 * Called when a walk finishes: switches the session over to handing out batches.
+	 *
+	 * @param batcher the encoder for this kind of result; built here rather than earlier so
+	 *                that a run nobody is waiting for never pays for one
+	 */
+	private void beginStreaming(ServerTaskSession session, Supplier<IResultBatcher> batcher)
 	{
 		ServerPlayer player = session.getPlayer();
 
 		if (player == null)
 		{
 			// The requester left; nothing to stream to
-			VerifySessionManager.INSTANCE.remove(session.getSessionId());
+			ServerTaskSessionManager.INSTANCE.remove(session.getSessionId());
 			return;
 		}
 
-		if (session.getState() == VerifySession.State.CANCELLED)
+		if (session.getState() == ServerTaskSession.State.CANCELLED)
 		{
-			VerifySessionManager.INSTANCE.remove(session.getSessionId());
+			ServerTaskSessionManager.INSTANCE.remove(session.getSessionId());
 			return;
 		}
 
-		session.setSerializer(new VerifyResultSerializer(session.getResult()));
-		session.setState(VerifySession.State.STREAMING);
+		session.setBatcher(batcher.get());
+		session.setState(ServerTaskSession.State.STREAMING);
 
-		this.sendNextVerifyBatch(player, session);
+		this.sendNextBatch(player, session);
+	}
+
+	/** Called when a verification finishes. */
+	private void beginVerifyStreaming(VerifySession session)
+	{
+		this.beginStreaming(session, () -> new VerifyResultSerializer(session.getResult()));
+	}
+
+	/** Called when an area analysis finishes. */
+	private void beginAnalyzeStreaming(AnalyzeSession session)
+	{
+		this.beginStreaming(session, () -> new AnalyzeResultSerializer(session.getResult()));
+	}
+
+	/** Called when a material list finishes. */
+	private void beginMaterialListStreaming(MaterialListSession session)
+	{
+		this.beginStreaming(session, () -> new MaterialListResultSerializer(session.getResult()));
 	}
 
 	/**
@@ -589,30 +703,34 @@ public class LitematicsDataProvider extends DataProviderBase
 	 * a result of any size crosses the wire a bounded amount at a time and a client that
 	 * stops responding simply stops the flow (and is eventually reaped by the timeout).
 	 */
-	private void sendNextVerifyBatch(ServerPlayer player, VerifySession session)
+	private void sendNextBatch(ServerPlayer player, ServerTaskSession session)
 	{
-		VerifyResultSerializer serializer = session.getSerializer();
+		IResultBatcher batcher = session.getBatcher();
 
-		if (serializer == null || session.getState() != VerifySession.State.STREAMING)
+		if (batcher == null || session.getState() != ServerTaskSession.State.STREAMING)
 		{
 			return;
 		}
 
-		if (!serializer.hasMore() && serializer.getBatchNumber() > 0)
+		if (!batcher.hasMore() && batcher.getBatchNumber() > 0)
 		{
 			// The final batch has been acknowledged; the session has served its purpose
-			session.setState(VerifySession.State.DONE);
-			VerifySessionManager.INSTANCE.remove(session.getSessionId());
+			session.setState(ServerTaskSession.State.DONE);
+			ServerTaskSessionManager.INSTANCE.remove(session.getSessionId());
 			return;
 		}
 
-		CompoundData batch = serializer.nextBatch(this.verifyBatchPositions.getValue(), session.getSessionId());
+		CompoundData batch = batcher.nextBatch(this.taskBatchPositions.getValue(), session.getSessionId());
 
 		HANDLER.encodeServerData(player, ServuxLitematicaPacket.ResponseS2CStart(batch));
 	}
 
-	/** Progress ping, so the client's verifier GUI can show something while it waits. */
-	public void sendVerifyStatus(VerifySession session)
+	/**
+	 * Progress ping, so the client's GUI can show something while it waits.
+	 *
+	 * @param extra adds the fields only this kind of task reports, or null for none
+	 */
+	public void sendTaskStatus(ServerTaskSession session, @Nullable Consumer<CompoundData> extra)
 	{
 		ServerPlayer player = session.getPlayer();
 
@@ -622,20 +740,36 @@ public class LitematicsDataProvider extends DataProviderBase
 		}
 
 		CompoundData tag = new CompoundData();
-		tag.putString("Task", "LitematicaVerifyStatus");
+		tag.putString("Task", session.getKind().statusTask());
 		tag.putIntArray("SessionId", VerifyResultSerializer.uuidToIntArray(session.getSessionId()));
-		tag.putInt("ChunksDone", session.getResult().getProcessedChunks());
-		tag.putInt("ChunksTotal", session.getResult().getTotalChunks());
-		tag.putInt("Mismatches", session.getResult().getTotalMismatches());
+		tag.putInt("ChunksDone", session.getProgress().getProcessedChunks());
+		tag.putInt("ChunksTotal", session.getProgress().getTotalChunks());
+
+		if (extra != null)
+		{
+			extra.accept(tag);
+		}
 
 		HANDLER.encodeServerData(player, ServuxLitematicaPacket.TaskStatusSync(tag));
 	}
 
+	/** Progress ping for a verification, which also reports the mismatches found so far. */
+	public void sendVerifyStatus(VerifySession session)
+	{
+		this.sendTaskStatus(session, tag -> tag.putInt("Mismatches", session.getResult().getTotalMismatches()));
+	}
+
+	/** Progress ping for a material list, which also reports what is still missing so far. */
+	public void sendMaterialListStatus(MaterialListSession session)
+	{
+		this.sendTaskStatus(session, tag -> tag.putLong("Missing", session.getResult().getBlocksMissing()));
+	}
+
 	/** Reports a failure as a translation key, so the client renders it in its own language. */
-	private void sendVerifyError(ServerPlayer player, @Nullable int[] sessionId, String key)
+	private void sendTaskError(ServerPlayer player, ServerTaskKind kind, @Nullable int[] sessionId, String key)
 	{
 		CompoundData tag = new CompoundData();
-		tag.putString("Task", "LitematicaVerifyError");
+		tag.putString("Task", kind.errorTask());
 
 		if (sessionId != null && sessionId.length == 4)
 		{
@@ -954,29 +1088,6 @@ public class LitematicsDataProvider extends DataProviderBase
 	}
 
 	/**
-	 * The player a verification task will run for.
-	 * <p>
-	 * A task needs one: {@code TaskBase} reads the player's position to sort chunks
-	 * closest-first, and the progress pings go to that player. A command gives one through
-	 * its source; a packet driven request has no source at all, so the requester - who by
-	 * definition is a player, since the packet came from them - is looked up by owner
-	 * instead. Without that, every packet driven verify would fail to start.
-	 *
-	 * @return null for a console or command block source, which has no player either way
-	 */
-	@Nullable
-	private ServerPlayer taskPlayerFor(ServerLevel level, UUID owner, @Nullable CommandSourceStack source)
-	{
-		if (source != null)
-		{
-			return source.getPlayer();
-		}
-
-		return owner.equals(VerifySession.CONSOLE_OWNER)
-		       ? null : level.getServer().getPlayerList().getPlayer(owner);
-	}
-
-	/**
 	 * @param sessionId the id to run under, or null to mint one. A packet driven request
 	 *                  supplies its own so it can match the replies to its request.
 	 */
@@ -1000,7 +1111,7 @@ public class LitematicsDataProvider extends DataProviderBase
 		VerifySession session = new VerifySession(sessionId != null ? sessionId : UUID.randomUUID(),
 		                                          owner, placement.getName(), level, result, source);
 
-		if (!VerifySessionManager.INSTANCE.add(session, this.verifySessionTimeout.getValue()))
+		if (!ServerTaskSessionManager.INSTANCE.add(session, this.taskSessionTimeout.getValue()))
 		{
 			return null;
 		}
@@ -1010,10 +1121,10 @@ public class LitematicsDataProvider extends DataProviderBase
 		// A layer range only takes effect when the behavior asks for it; see shouldPasteBlock()
 		PasteLayerBehavior layerBehavior = layerRange != null ? PasteLayerBehavior.RENDERED_ONLY : PasteLayerBehavior.ALL;
 
-		VerifyChunkLoader chunkLoader = this.verifyForceLoadChunks.getValue()
-		                              ? new VerifyChunkLoader(level,
-		                                                      this.verifyGenerateMissingChunks.getValue(),
-		                                                      this.verifyMaxChunkLoadsPerTick.getValue())
+		ServerChunkLoader chunkLoader = this.chunkWalkForceLoadChunks.getValue()
+		                              ? new ServerChunkLoader(level,
+		                                                      this.chunkWalkGenerateMissingChunks.getValue(),
+		                                                      this.chunkWalkMaxLoadsPerTick.getValue())
 		                              : null;
 
 		VerifyNbtComparator nbtComparator = this.verifyNbt.getValue()
@@ -1023,7 +1134,7 @@ public class LitematicsDataProvider extends DataProviderBase
 
 		TaskVerifySchematicPerChunk task = new TaskVerifySchematicPerChunk(
 				ctx, Collections.singletonList(placement), layerRange, layerBehavior, result,
-				chunkLoader, nbtComparator, this.verifyPauseMsptThreshold.getValue(), null);
+				chunkLoader, nbtComparator, this.chunkWalkPauseMsptThreshold.getValue(), null);
 
 		task.setOnProgress(() -> this.sendVerifyStatus(session));
 
@@ -1073,7 +1184,7 @@ public class LitematicsDataProvider extends DataProviderBase
 		if (!this.hasPermissionsForVerify(player))
 		{
 			Servux.debugLog("litematic_data: Denying Litematic Verify for player {}, Insufficient Permissions.", player.getName().tryCollapseToString());
-			this.sendVerifyError(player, tags.getIntArray("SessionId"), "servux.litematics.error.insufficent_for_verify");
+			this.sendTaskError(player, ServerTaskKind.VERIFY, tags.getIntArray("SessionId"), "servux.litematics.error.insufficent_for_verify");
 			return;
 		}
 
@@ -1095,7 +1206,7 @@ public class LitematicsDataProvider extends DataProviderBase
 
 		if (placement == null)
 		{
-			this.sendVerifyError(player, sessionIdArray, "servux.litematics.verify.error.bad_placement");
+			this.sendTaskError(player, ServerTaskKind.VERIFY, sessionIdArray, "servux.litematics.verify.error.bad_placement");
 			return;
 		}
 
@@ -1105,12 +1216,341 @@ public class LitematicsDataProvider extends DataProviderBase
 		UUID sessionId = VerifyResultSerializer.uuidFromIntArray(sessionIdArray);
 
 		VerifySession session = this.startVerify(player.level(), placement, layerRange, player.getUUID(), null,
-		                                         sessionId, this::beginStreaming);
+		                                         sessionId, this::beginVerifyStreaming);
 
 		if (session == null)
 		{
-			this.sendVerifyError(player, sessionIdArray, "servux.litematics.verify.error.already_running");
+			this.sendTaskError(player, ServerTaskKind.VERIFY, sessionIdArray, "servux.litematics.verify.error.already_running");
 		}
+	}
+
+	/**
+	 * Starts a server side analysis of the given area.
+	 * <p>
+	 * Read-only, like a verification, and subject to the same chunk policy: chunks that were
+	 * never generated are reported rather than generated.
+	 *
+	 * @param owner      the requester, used to enforce one running analysis each
+	 * @param source     the command source to report back to, or null for a packet request
+	 * @param sessionId  the id to run under, or null to mint one
+	 * @param onComplete run on the server thread when the walk ends
+	 * @return the new session, or null if the requester already has one running, or if the
+	 *         area is larger than {@code analyze_max_volume} allows
+	 */
+	@Nullable
+	public AnalyzeSession startAnalyze(ServerLevel level,
+	                                   AreaSelection area,
+	                                   @Nullable LayerRange layerRange,
+	                                   boolean countEntities,
+	                                   boolean countContainers,
+	                                   UUID owner,
+	                                   @Nullable CommandSourceStack source,
+	                                   @Nullable UUID sessionId,
+	                                   @Nullable Consumer<AnalyzeSession> onComplete)
+	{
+		if (this.exceedsAnalyzeVolume(area))
+		{
+			return null;
+		}
+
+		ServerPlayer player = this.taskPlayerFor(level, owner, source);
+
+		if (player == null)
+		{
+			return null;
+		}
+
+		AnalyzeResult result = new AnalyzeResult();
+		AnalyzeSession session = new AnalyzeSession(sessionId != null ? sessionId : UUID.randomUUID(),
+		                                            owner, area.getName(), level, result, source);
+
+		if (!ServerTaskSessionManager.INSTANCE.add(session, this.taskSessionTimeout.getValue()))
+		{
+			return null;
+		}
+
+		TaskContext ctx = new TaskContext(level.getServer(), level, player, area.getName(), System.currentTimeMillis());
+
+		ServerChunkLoader chunkLoader = this.chunkWalkForceLoadChunks.getValue()
+		                              ? new ServerChunkLoader(level,
+		                                                      this.chunkWalkGenerateMissingChunks.getValue(),
+		                                                      this.chunkWalkMaxLoadsPerTick.getValue())
+		                              : null;
+
+		TaskAnalyzeArea task = new TaskAnalyzeArea(ctx, area.getAllSubRegionBoxes(), layerRange, result, chunkLoader,
+		                                           countEntities,
+		                                           countContainers && this.analyzeContainers.getValue(),
+		                                           this.chunkWalkPauseMsptThreshold.getValue(), null);
+
+		task.setOnProgress(() -> this.sendTaskStatus(session, null));
+
+		task.setOnComplete(() ->
+		                   {
+			                   // A cancel already moved the session out of RUNNING
+			                   if (session.isRunning())
+			                   {
+				                   session.setState(ServerTaskSession.State.DONE);
+			                   }
+
+			                   session.touch();
+
+			                   if (onComplete != null)
+			                   {
+				                   onComplete.accept(session);
+			                   }
+		                   });
+
+		session.setTask(task);
+		TaskScheduler.getInstance().scheduleTask(task, 1);
+
+		Servux.debugLog("litematic_data: started analyze session {} for area '{}'", session.getSessionId(), area.getName());
+
+		return session;
+	}
+
+	/**
+	 * Handles a {@code LitematicaAnalyze} request: a client asking the server to tally an
+	 * area it selected.
+	 * <p>
+	 * Clients learn that this exists from the {@code analyze} entry in the {@code Features}
+	 * metadata list, not from the protocol version.
+	 */
+	public void handleClientAnalyzeRequest(ServerPlayer player, CompoundData tags)
+	{
+		if (!this.isPlayerRegistered(player) || !this.isEnabled() || tags == null || tags.isEmpty())
+		{
+			return;
+		}
+
+		int[] sessionIdArray = tags.getIntArray("SessionId");
+
+		if (!this.hasPermissionsForAnalyze(player))
+		{
+			Servux.debugLog("litematic_data: Denying Litematic Analyze for player {}, Insufficient Permissions.", player.getName().tryCollapseToString());
+			this.sendTaskError(player, ServerTaskKind.ANALYZE, sessionIdArray, "servux.litematics.error.insufficent_for_analyze");
+			return;
+		}
+
+		AreaSelection area = AreaSelectionCodec.read(tags);
+
+		if (area == null)
+		{
+			this.sendTaskError(player, ServerTaskKind.ANALYZE, sessionIdArray, "servux.litematics.analyze.error.bad_area");
+			return;
+		}
+
+		if (this.exceedsAnalyzeVolume(area))
+		{
+			this.sendTaskError(player, ServerTaskKind.ANALYZE, sessionIdArray, "servux.litematics.analyze.error.too_large");
+			return;
+		}
+
+		LayerRange layerRange = tags.getCodec("RenderLayerRange", LayerRange.CODEC).orElse(null);
+
+		// The client picks the session id so that it can match replies to its own request
+		UUID sessionId = VerifyResultSerializer.uuidFromIntArray(sessionIdArray);
+
+		AnalyzeSession session = this.startAnalyze(player.level(), area, layerRange,
+		                                           tags.getBoolean("CountEntities"),
+		                                           tags.getBoolean("CountContainers"),
+		                                           player.getUUID(), null, sessionId, this::beginAnalyzeStreaming);
+
+		if (session == null)
+		{
+			this.sendTaskError(player, ServerTaskKind.ANALYZE, sessionIdArray, "servux.litematics.analyze.error.already_running");
+		}
+	}
+
+	/**
+	 * Starts a server side material list for the given placement.
+	 * <p>
+	 * Read-only, like a verification, and subject to the same chunk policy: chunks that were
+	 * never generated are reported rather than generated.
+	 *
+	 * @param ignoreState     do not count a block of the right type but the wrong state as
+	 *                        missing, matching Litematica's {@code MATERIAL_LIST_IGNORE_STATE}
+	 * @param countEntities   tally the entities the placement would spawn
+	 * @param countContainers tally the contents of the containers the placement would place
+	 * @param owner           the requester, used to enforce one running material list each
+	 * @param source          the command source to report back to, or null for a packet request
+	 * @param sessionId       the id to run under, or null to mint one. A packet driven request
+	 *                        supplies its own so it can match the replies to its request.
+	 * @param onComplete      run on the server thread when the walk ends
+	 * @return the new session, or null if the requester already has one running
+	 */
+	@Nullable
+	public MaterialListSession startMaterialList(ServerLevel level,
+	                                             SchematicPlacement placement,
+	                                             @Nullable LayerRange layerRange,
+	                                             boolean ignoreState,
+	                                             boolean countEntities,
+	                                             boolean countContainers,
+	                                             UUID owner,
+	                                             @Nullable CommandSourceStack source,
+	                                             @Nullable UUID sessionId,
+	                                             @Nullable Consumer<MaterialListSession> onComplete)
+	{
+		ServerPlayer player = this.taskPlayerFor(level, owner, source);
+
+		if (player == null)
+		{
+			return null;
+		}
+
+		MaterialListResult result = new MaterialListResult();
+		MaterialListSession session = new MaterialListSession(sessionId != null ? sessionId : UUID.randomUUID(),
+		                                                      owner, placement.getName(), level, result, source);
+
+		if (!ServerTaskSessionManager.INSTANCE.add(session, this.taskSessionTimeout.getValue()))
+		{
+			return null;
+		}
+
+		TaskContext ctx = new TaskContext(level.getServer(), level, player, placement.getName(), System.currentTimeMillis());
+
+		// A layer range only takes effect when the behavior asks for it; see shouldPasteBlock()
+		PasteLayerBehavior layerBehavior = layerRange != null ? PasteLayerBehavior.RENDERED_ONLY : PasteLayerBehavior.ALL;
+
+		ServerChunkLoader chunkLoader = this.chunkWalkForceLoadChunks.getValue()
+		                              ? new ServerChunkLoader(level,
+		                                                      this.chunkWalkGenerateMissingChunks.getValue(),
+		                                                      this.chunkWalkMaxLoadsPerTick.getValue())
+		                              : null;
+
+		TaskMaterialListPlacement task = new TaskMaterialListPlacement(
+				ctx, Collections.singletonList(placement), layerRange, layerBehavior, result, chunkLoader,
+				ignoreState, countEntities, countContainers,
+				this.chunkWalkPauseMsptThreshold.getValue(), null);
+
+		task.setOnProgress(() -> this.sendMaterialListStatus(session));
+
+		task.setOnComplete(() ->
+		                   {
+			                   // A cancel already moved the session out of RUNNING
+			                   if (session.isRunning())
+			                   {
+				                   session.setState(ServerTaskSession.State.DONE);
+			                   }
+
+			                   session.touch();
+
+			                   if (onComplete != null)
+			                   {
+				                   onComplete.accept(session);
+			                   }
+		                   });
+
+		session.setTask(task);
+		TaskScheduler.getInstance().scheduleTask(task, 1);
+
+		Servux.debugLog("litematic_data: started material list session {} for placement '{}'", session.getSessionId(), placement.getName());
+
+		return session;
+	}
+
+	/**
+	 * Handles a {@code LitematicaMaterials} request: a client asking the server to price up
+	 * a placement it uploaded.
+	 * <p>
+	 * Same shape as {@link #handleClientVerifyRequest} - the schematic travels with the
+	 * placement - because the two answer the same question about the same blocks; a
+	 * verification says what is wrong, a material list says what is still needed. Clients
+	 * learn that this exists from the {@code materials} entry in the {@code Features}
+	 * metadata list, not from the protocol version.
+	 */
+	public void handleClientMaterialListRequest(ServerPlayer player, CompoundData tags)
+	{
+		if (!this.isPlayerRegistered(player) || !this.isEnabled() || tags == null || tags.isEmpty())
+		{
+			return;
+		}
+
+		int[] sessionIdArray = tags.getIntArray("SessionId");
+
+		if (!this.hasPermissionsForMaterials(player))
+		{
+			Servux.debugLog("litematic_data: Denying Litematic Material List for player {}, Insufficient Permissions.", player.getName().tryCollapseToString());
+			this.sendTaskError(player, ServerTaskKind.MATERIALS, sessionIdArray, "servux.litematics.error.insufficent_for_materials");
+			return;
+		}
+
+		SchematicPlacement placement;
+
+		try
+		{
+			// createFromData() rethrows parse failures as unchecked, and this runs off a
+			// packet, so a malformed payload must not escape into the network thread
+			placement = SchematicPlacement.createFromData(tags);
+		}
+		catch (Exception e)
+		{
+			Servux.LOGGER.warn("litematic_data: failed to read the material list placement from player {}; {}", player.getName().tryCollapseToString(), e.getLocalizedMessage());
+			placement = null;
+		}
+
+		if (placement == null)
+		{
+			this.sendTaskError(player, ServerTaskKind.MATERIALS, sessionIdArray, "servux.litematics.materials.error.bad_placement");
+			return;
+		}
+
+		LayerRange layerRange = tags.getCodec("RenderLayerRange", LayerRange.CODEC).orElse(null);
+
+		// The client picks the session id so that it can match replies to its own request
+		UUID sessionId = VerifyResultSerializer.uuidFromIntArray(sessionIdArray);
+
+		MaterialListSession session = this.startMaterialList(player.level(), placement, layerRange,
+		                                                     tags.getBoolean("IgnoreState"),
+		                                                     tags.getBoolean("CountEntities"),
+		                                                     tags.getBoolean("CountContainers"),
+		                                                     player.getUUID(), null, sessionId,
+		                                                     this::beginMaterialListStreaming);
+
+		if (session == null)
+		{
+			this.sendTaskError(player, ServerTaskKind.MATERIALS, sessionIdArray, "servux.litematics.materials.error.already_running");
+		}
+	}
+
+	/** True when the area covers more blocks than one analysis is allowed to read. */
+	public boolean exceedsAnalyzeVolume(AreaSelection area)
+	{
+		return this.exceedsVolume(area, this.analyzeMaxVolume.getValue());
+	}
+
+	private boolean exceedsVolume(AreaSelection area, final int max)
+	{
+		if (max <= 0)
+		{
+			return false;
+		}
+
+		long volume = 0;
+
+		for (Box box : area.getAllSubRegionBoxes())
+		{
+			BlockPos pos1 = box.getPos1();
+			BlockPos pos2 = box.getPos2();
+
+			if (pos1 == null || pos2 == null)
+			{
+				continue;
+			}
+
+			// Corners are inclusive on both ends, hence the +1 on each axis
+			long sizeX = Math.abs(pos1.getX() - pos2.getX()) + 1L;
+			long sizeY = Math.abs(pos1.getY() - pos2.getY()) + 1L;
+			long sizeZ = Math.abs(pos1.getZ() - pos2.getZ()) + 1L;
+
+			volume += sizeX * sizeY * sizeZ;
+
+			if (volume > max)
+			{
+				return true;
+			}
+		}
+
+		return false;
 	}
 
 	@Override
@@ -1132,6 +1572,16 @@ public class LitematicsDataProvider extends DataProviderBase
 	public boolean hasPermissionsForVerify(ServerPlayer player)
 	{
 		return this.hasPermission(player) && PermissionsUtil.check(player, this.permNode + ".verify", this.verifyPermissionLevel.getValue());
+	}
+
+	public boolean hasPermissionsForAnalyze(ServerPlayer player)
+	{
+		return this.hasPermission(player) && PermissionsUtil.check(player, this.permNode + ".analyze", this.analyzePermissionLevel.getValue());
+	}
+
+	public boolean hasPermissionsForMaterials(ServerPlayer player)
+	{
+		return this.hasPermission(player) && PermissionsUtil.check(player, this.permNode + ".materials", this.materialsPermissionLevel.getValue());
 	}
 
 	public boolean isSyncmaticaInteropEnabled()

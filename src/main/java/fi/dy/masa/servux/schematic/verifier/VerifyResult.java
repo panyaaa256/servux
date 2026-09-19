@@ -11,6 +11,8 @@ import it.unimi.dsi.fastutil.objects.Object2IntOpenHashMap;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.level.block.state.BlockState;
 
+import fi.dy.masa.servux.scheduler.ChunkWalkProgress;
+
 /**
  * Accumulates the outcome of a server side verification run.
  * <p>
@@ -30,15 +32,18 @@ public class VerifyResult
 	private final Object2IntOpenHashMap<BlockState> correctStateCounts = new Object2IntOpenHashMap<>();
 	private final int[] categoryCounts = new int[VerifyMismatchType.values().length];
 
+	/**
+	 * The chunk counters, kept in the shared holder the walking task maintains. Every
+	 * chunk level getter below simply forwards to it, so the numbers this class reports
+	 * are the same objects the task is updating.
+	 */
+	private final ChunkWalkProgress progress = new ChunkWalkProgress();
+
 	private final int maxPositions;
 
 	private int schematicBlocks;
 	private int worldBlocks;
 	private int correctStatesCount;
-	private int totalChunks;
-	private int processedChunks;
-	private int unloadedChunks;
-	private int ungeneratedChunks;
 	private int storedPositions;
 	private boolean truncated;
 
@@ -149,35 +154,26 @@ public class VerifyResult
 		return this.correctStatesCount;
 	}
 
-	public int getTotalChunks()
+	/** The counters the walking task maintains; hand this to the task that fills it. */
+	public ChunkWalkProgress getProgress()
 	{
-		return this.totalChunks;
+		return this.progress;
 	}
 
-	public void setTotalChunks(int totalChunks)
+	public int getTotalChunks()
 	{
-		this.totalChunks = totalChunks;
+		return this.progress.getTotalChunks();
 	}
 
 	public int getProcessedChunks()
 	{
-		return this.processedChunks;
-	}
-
-	public void addProcessedChunk()
-	{
-		this.processedChunks++;
+		return this.progress.getProcessedChunks();
 	}
 
 	/** Chunks that were part of the placement but could not be read (not loaded). */
 	public int getUnloadedChunks()
 	{
-		return this.unloadedChunks;
-	}
-
-	public void setUnloadedChunks(int unloadedChunks)
-	{
-		this.unloadedChunks = unloadedChunks;
+		return this.progress.getUnloadedChunks();
 	}
 
 	/**
@@ -186,18 +182,13 @@ public class VerifyResult
 	 */
 	public int getUngeneratedChunks()
 	{
-		return this.ungeneratedChunks;
-	}
-
-	public void addUngeneratedChunk()
-	{
-		this.ungeneratedChunks++;
+		return this.progress.getUngeneratedChunks();
 	}
 
 	/** Chunks that were not read for any reason, whether unloaded or never generated. */
 	public int getSkippedChunks()
 	{
-		return this.unloadedChunks + this.ungeneratedChunks;
+		return this.progress.getSkippedChunks();
 	}
 
 	/** True when the position lists were capped and do not hold every mismatch position. */

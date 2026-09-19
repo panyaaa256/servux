@@ -1,4 +1,4 @@
-package fi.dy.masa.servux.schematic.verifier;
+package fi.dy.masa.servux.util.chunk;
 
 import java.util.HashMap;
 import java.util.HashSet;
@@ -16,10 +16,15 @@ import net.minecraft.world.level.ChunkPos;
 import fi.dy.masa.servux.Servux;
 
 /**
- * Brings the chunks a verification needs into memory, without ever stalling the server
- * thread and without generating terrain.
+ * Brings the chunks a read-only server side task needs into memory, without ever stalling
+ * the server thread and without generating terrain.
  * <p>
- * This is the part of verification that touches a live server hardest, so every step is
+ * This is <i>only</i> suitable for tasks that read. Its ticket deliberately does not
+ * simulate, so a task that writes blocks would place them into chunks that never tick -
+ * scheduled ticks and neighbour updates from the placed blocks would simply never fire.
+ * Writing tasks require genuinely loaded chunks instead of pulling their own in.
+ * <p>
+ * This is the part of a walking task that touches a live server hardest, so every step is
  * deliberately conservative:
  * <ul>
  *   <li><b>Never blocks.</b> {@code getChunk(..., create = true)} parks the server thread
@@ -34,22 +39,22 @@ import fi.dy.masa.servux.Servux;
  *       ungenerated if absent.</li>
  *   <li><b>Never simulates.</b> The ticket carries {@code FLAG_LOADING} <i>without</i>
  *       {@code FLAG_SIMULATION}, so the chunks it pulls in are readable but not ticked:
- *       no mob spawning, no redstone, no block or random ticks. Verification observes the
- *       world, it does not run it.</li>
+ *       no mob spawning, no redstone, no block or random ticks. A reading task observes
+ *       the world, it does not run it.</li>
  *   <li><b>Never leaks.</b> Tickets are released as soon as a chunk has been read, and
  *       carry a timeout as a backstop in case the task dies without cleaning up.</li>
  * </ul>
  */
-public class VerifyChunkLoader
+public class ServerChunkLoader
 {
-	/** Ticks a verify ticket survives untouched; a backstop, not the normal release path. */
+	/** Ticks a ticket survives untouched; a backstop, not the normal release path. */
 	private static final long TICKET_TIMEOUT_TICKS = 200L;
 
 	/**
-	 * Loading but explicitly not simulating. This is what keeps a verification from
+	 * Loading but explicitly not simulating. This is what keeps a walking task from
 	 * waking up the machinery in the chunks it visits.
 	 */
-	private static final TicketType VERIFY_TICKET = new TicketType(TICKET_TIMEOUT_TICKS, TicketType.FLAG_LOADING);
+	private static final TicketType WALK_TICKET = new TicketType(TICKET_TIMEOUT_TICKS, TicketType.FLAG_LOADING);
 
 	/** Radius 0: the ticket covers only the chunk being read. */
 	private static final int TICKET_RADIUS = 0;
@@ -136,7 +141,7 @@ public class VerifyChunkLoader
 
 	private int newRequestsThisTick;
 
-	public VerifyChunkLoader(ServerLevel world, boolean generateMissing, int maxNewRequestsPerTick)
+	public ServerChunkLoader(ServerLevel world, boolean generateMissing, int maxNewRequestsPerTick)
 	{
 		this.world = world;
 		this.generateMissing = generateMissing;
@@ -233,7 +238,7 @@ public class VerifyChunkLoader
 		}
 		catch (Exception e)
 		{
-			Servux.LOGGER.warn("VerifyChunkLoader: failed to probe chunk {}; treating it as ungenerated; {}", pos, e.getLocalizedMessage());
+			Servux.LOGGER.warn("ServerChunkLoader: failed to probe chunk {}; treating it as ungenerated; {}", pos, e.getLocalizedMessage());
 			this.requests.remove(pos);
 
 			return Result.UNGENERATED;
@@ -255,7 +260,7 @@ public class VerifyChunkLoader
 	private void startLoad(ChunkPos pos, ServerChunkCache cache, Request request)
 	{
 		request.stage = Stage.LOAD;
-		request.load = cache.addTicketAndLoadWithRadius(VERIFY_TICKET, pos, TICKET_RADIUS);
+		request.load = cache.addTicketAndLoadWithRadius(WALK_TICKET, pos, TICKET_RADIUS);
 
 		this.ticketed.add(pos);
 	}
@@ -267,7 +272,7 @@ public class VerifyChunkLoader
 
 		if (this.ticketed.remove(pos))
 		{
-			this.world.getChunkSource().removeTicketWithRadius(VERIFY_TICKET, pos, TICKET_RADIUS);
+			this.world.getChunkSource().removeTicketWithRadius(WALK_TICKET, pos, TICKET_RADIUS);
 		}
 	}
 
@@ -278,7 +283,7 @@ public class VerifyChunkLoader
 
 		for (ChunkPos pos : this.ticketed)
 		{
-			cache.removeTicketWithRadius(VERIFY_TICKET, pos, TICKET_RADIUS);
+			cache.removeTicketWithRadius(WALK_TICKET, pos, TICKET_RADIUS);
 		}
 
 		this.ticketed.clear();
