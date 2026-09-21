@@ -139,7 +139,7 @@ public class SchematicVerifyUtils
 
 		if (comparator.isComparable(expectedTag, foundTag) && comparator.differs(expectedTag, foundTag))
 		{
-			result.add(VerifyMismatchType.WRONG_NBT, expected, found, pos);
+			result.addWrongContents(expected, found, pos, expectedNbt, DataConverterNbt.fromVanillaCompound(foundTag));
 		}
 	}
 }

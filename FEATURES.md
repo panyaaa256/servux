@@ -24,6 +24,8 @@ Servux New Features (0.3.7+)
     * Mismatches are reported per category (`Missing`, `Extra`, `Wrong Block`, `Wrong State`, `Wrong Contents`), with clickable coordinates that suggest a teleport, so the results are usable from vanilla clients with no mod installed.
     * Chunks outside the client's render distance are loaded on demand, so a verification covers the whole build.  Loading is non-blocking and the chunks are loaded but §onot ticked§r -- no mob spawning, no redstone, no block or random ticks.  Chunks that have never been generated are §oreported, not generated§r, so inspecting a build never enlarges the world; `chunk_walk_generate_missing_chunks` opts into generating them.  New loads back off while the server's tick time is high (`chunk_walk_pause_mspt_threshold`), and a walk that can never catch up ends with the remainder reported rather than sitting in the scheduler forever.
     * `Wrong Contents` compares container inventories, which Litematica's client side verifier cannot do at all -- it only compares block states, so an empty chest counts as correct there.  Only checked where the block state already matches, so this count overlaps the correct-state count rather than adding to the other categories.
+      * A client asks for it per verification (Litematica's `verifierCheckContents`, off by default); `verify_nbt` decides whether the server allows it at all.  A client that predates the option gets the comparison whenever `verify_nbt` is on.
+      * The first `verify_nbt_detail_positions` of these also carry both containers' contents back to the client, which shows the schematic's and the world's inventory side by side.
     * Can verify schematics already shared through Syncmatica without an upload, by reading its placement manifest from disk.  This is a read-only, unofficial interface and can be turned off with `verify_syncmatica_interop`.
     * Verify operations have a separate permissions node.
     * Results are streamed to the client in acknowledged batches (`task_batch_positions`), so a verification covering millions of positions never builds one oversized packet.  A session that nobody acknowledges is discarded after `task_session_timeout`.
@@ -117,6 +119,7 @@ Servux New Features (0.3.7+)
     "verify_nbt": true,
     "verify_nbt_slot_exact": false,
     "verify_nbt_strict": false,
+    "verify_nbt_detail_positions": 1024,
     "analyze_max_volume": 67108864,
     "analyze_containers": true
   },
