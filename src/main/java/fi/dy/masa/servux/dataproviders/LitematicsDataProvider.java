@@ -110,6 +110,13 @@ public class LitematicsDataProvider extends DataProviderBase
 	public final ServuxBoolSetting verifyNbtSlotExact = new ServuxBoolSetting(this, "verify_nbt_slot_exact", false);
 	public final ServuxBoolSetting verifyNbtStrict = new ServuxBoolSetting(this, "verify_nbt_strict", false);
 	/**
+	 * How many Wrong Contents positions also carry both sides' block entity data back to the
+	 * client, so that it can show what is actually wrong. A container's data can run to
+	 * kilobytes (a chest of full shulker boxes), hence a cap of its own rather than
+	 * verify_max_result_positions.
+	 */
+	public final ServuxIntSetting verifyNbtDetailPositions = new ServuxIntSetting(this, "verify_nbt_detail_positions", 1024, 65536, 0);
+	/**
 	 * Cap on the volume one analysis may cover, in blocks. An analysis reads every position
 	 * in the area, so an unbounded selection is an unbounded amount of work; 0 lifts the cap.
 	 * The default is a 512x256x512 region, which is already far beyond a normal build.
@@ -140,6 +147,7 @@ public class LitematicsDataProvider extends DataProviderBase
 			this.verifyNbt,
 			this.verifyNbtSlotExact,
 			this.verifyNbtStrict,
+			this.verifyNbtDetailPositions,
 			this.analyzeMaxVolume,
 			this.analyzeContainers
 	);
@@ -1084,12 +1092,14 @@ public class LitematicsDataProvider extends DataProviderBase
 	                                 @Nullable CommandSourceStack source,
 	                                 @Nullable Consumer<VerifySession> onComplete)
 	{
-		return this.startVerify(level, placement, layerRange, owner, source, null, onComplete);
+		return this.startVerify(level, placement, layerRange, owner, source, null, true, onComplete);
 	}
 
 	/**
-	 * @param sessionId the id to run under, or null to mint one. A packet driven request
-	 *                  supplies its own so it can match the replies to its request.
+	 * @param sessionId       the id to run under, or null to mint one. A packet driven request
+	 *                        supplies its own so it can match the replies to its request.
+	 * @param compareContents whether the requester wants container contents compared at all;
+	 *                        they only are when {@code verify_nbt} also allows it
 	 */
 	@Nullable
 	public VerifySession startVerify(ServerLevel level,
@@ -1098,6 +1108,7 @@ public class LitematicsDataProvider extends DataProviderBase
 	                                 UUID owner,
 	                                 @Nullable CommandSourceStack source,
 	                                 @Nullable UUID sessionId,
+	                                 boolean compareContents,
 	                                 @Nullable Consumer<VerifySession> onComplete)
 	{
 		ServerPlayer player = this.taskPlayerFor(level, owner, source);
@@ -1107,7 +1118,7 @@ public class LitematicsDataProvider extends DataProviderBase
 			return null;
 		}
 
-		VerifyResult result = new VerifyResult(this.verifyMaxResultPositions.getValue());
+		VerifyResult result = new VerifyResult(this.verifyMaxResultPositions.getValue(), this.verifyNbtDetailPositions.getValue());
 		VerifySession session = new VerifySession(sessionId != null ? sessionId : UUID.randomUUID(),
 		                                          owner, placement.getName(), level, result, source);
 
@@ -1127,10 +1138,13 @@ public class LitematicsDataProvider extends DataProviderBase
 		                                                      this.chunkWalkMaxLoadsPerTick.getValue())
 		                              : null;
 
-		VerifyNbtComparator nbtComparator = this.verifyNbt.getValue()
+		VerifyNbtComparator nbtComparator = this.verifyNbt.getValue() && compareContents
 		                                  ? new VerifyNbtComparator(this.verifyNbtSlotExact.getValue(),
 		                                                            this.verifyNbtStrict.getValue())
 		                                  : null;
+
+		// The client highlights the differing slots itself, so it has to compare the way we did
+		result.setContentsComparison(this.verifyNbtSlotExact.getValue(), this.verifyNbtStrict.getValue());
 
 		TaskVerifySchematicPerChunk task = new TaskVerifySchematicPerChunk(
 				ctx, Collections.singletonList(placement), layerRange, layerBehavior, result,
@@ -1215,8 +1229,11 @@ public class LitematicsDataProvider extends DataProviderBase
 		// The client picks the session id so that it can match replies to its own request
 		UUID sessionId = VerifyResultSerializer.uuidFromIntArray(sessionIdArray);
 
+		// A client that predates the option does not send it, and gets what it always got
+		boolean compareContents = tags.contains("VerifyNbt", Constants.NBT.TAG_BYTE) == false || tags.getBoolean("VerifyNbt");
+
 		VerifySession session = this.startVerify(player.level(), placement, layerRange, player.getUUID(), null,
-		                                         sessionId, this::beginVerifyStreaming);
+		                                         sessionId, compareContents, this::beginVerifyStreaming);
 
 		if (session == null)
 		{

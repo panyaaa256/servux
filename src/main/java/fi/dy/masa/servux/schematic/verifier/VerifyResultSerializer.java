@@ -38,6 +38,9 @@ import fi.dy.masa.servux.util.data.tag.ListData;
  */
 public class VerifyResultSerializer implements IResultBatcher
 {
+	/** Wrong Contents positions per batch that carry both sides' container data. */
+	private static final int MAX_CONTENTS_PER_BATCH = 256;
+
 	private final VerifyResult result;
 
 	/** The flattened pair list, so that batching can resume mid-pair. */
@@ -85,22 +88,39 @@ public class VerifyResultSerializer implements IResultBatcher
 		List<BlockState> paletteOrder = new ArrayList<>();
 
 		ListData entries = new ListData();
+		ListData contents = new ListData();
 		int budget = Math.max(1, maxPositions);
+		// Container data is far heavier than a position, so it gets a budget of its own
+		int contentsBudget = MAX_CONTENTS_PER_BATCH;
 
-		while (budget > 0 && this.pairIndex < this.pairs.size())
+		while (budget > 0 && contentsBudget > 0 && this.pairIndex < this.pairs.size())
 		{
 			Map.Entry<BlockMismatch, Collection<BlockPos>> entry = this.pairs.get(this.pairIndex);
 			BlockMismatch mismatch = entry.getKey();
 			List<BlockPos> positions = asList(entry.getValue());
+			final boolean withContents = mismatch.type() == VerifyMismatchType.WRONG_NBT && this.result.hasContents();
 
 			int remaining = positions.size() - this.positionIndex;
-			int take = Math.min(remaining, budget);
+			int take = Math.min(remaining, withContents ? Math.min(budget, contentsBudget) : budget);
 
 			long[] encoded = new long[take];
 
 			for (int i = 0; i < take; i++)
 			{
-				encoded[i] = positions.get(this.positionIndex + i).asLong();
+				BlockPos pos = positions.get(this.positionIndex + i);
+				encoded[i] = pos.asLong();
+
+				VerifyResult.ContentsDetail detail = withContents ? this.result.getContents(pos) : null;
+
+				if (detail != null)
+				{
+					CompoundData element = new CompoundData();
+					element.putLong("Pos", pos.asLong());
+					element.put("Expected", detail.expected());
+					element.put("Found", detail.found());
+					contents.add(element);
+					contentsBudget--;
+				}
 			}
 
 			CompoundData element = new CompoundData();
@@ -130,6 +150,11 @@ public class VerifyResultSerializer implements IResultBatcher
 		tag.putIntArray("StatePalette", paletteIds);
 		tag.put("Entries", entries);
 
+		if (contents.isEmpty() == false)
+		{
+			tag.put("Contents", contents);
+		}
+
 		boolean last = !this.hasMore();
 		tag.putBoolean("Final", last);
 
@@ -155,6 +180,8 @@ public class VerifyResultSerializer implements IResultBatcher
 		totals.putInt("UnloadedChunks", this.result.getUnloadedChunks());
 		totals.putInt("UngeneratedChunks", this.result.getUngeneratedChunks());
 		totals.putBoolean("Truncated", this.result.isTruncated());
+		totals.putBoolean("ContentsSlotExact", this.result.isContentsSlotExact());
+		totals.putBoolean("ContentsStrict", this.result.isContentsStrict());
 
 		// The per-state correct counts, so the client can show the Correct State category
 		Object2IntOpenHashMap<BlockState> correct = this.result.getCorrectStateCounts();

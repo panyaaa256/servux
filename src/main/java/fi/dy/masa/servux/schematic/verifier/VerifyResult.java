@@ -2,8 +2,10 @@ package fi.dy.masa.servux.schematic.verifier;
 
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import javax.annotation.Nullable;
 import com.google.common.collect.ArrayListMultimap;
 import com.google.common.collect.Multimap;
 import it.unimi.dsi.fastutil.objects.Object2IntOpenHashMap;
@@ -12,6 +14,7 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.world.level.block.state.BlockState;
 
 import fi.dy.masa.servux.scheduler.ChunkWalkProgress;
+import fi.dy.masa.servux.util.data.tag.CompoundData;
 
 /**
  * Accumulates the outcome of a server side verification run.
@@ -40,6 +43,11 @@ public class VerifyResult
 	private final ChunkWalkProgress progress = new ChunkWalkProgress();
 
 	private final int maxPositions;
+	private final int maxContents;
+	/** Both sides' block entity data at a Wrong Contents position, for the first maxContents of them. */
+	private final Map<BlockPos, ContentsDetail> contents = new HashMap<>();
+	private boolean contentsSlotExact;
+	private boolean contentsStrict;
 
 	private int schematicBlocks;
 	private int worldBlocks;
@@ -49,7 +57,13 @@ public class VerifyResult
 
 	public VerifyResult(int maxPositions)
 	{
+		this(maxPositions, 0);
+	}
+
+	public VerifyResult(int maxPositions, int maxContents)
+	{
 		this.maxPositions = maxPositions;
+		this.maxContents = maxContents;
 		this.correctStateCounts.defaultReturnValue(0);
 	}
 
@@ -60,18 +74,62 @@ public class VerifyResult
 	 * growing, but the category counters keep going, so the reported totals stay accurate
 	 * even for a truncated result.
 	 */
-	public void add(VerifyMismatchType type, BlockState expected, BlockState found, BlockPos pos)
+	public boolean add(VerifyMismatchType type, BlockState expected, BlockState found, BlockPos pos)
 	{
 		this.categoryCounts[type.ordinal()]++;
 
 		if (this.storedPositions >= this.maxPositions)
 		{
 			this.truncated = true;
-			return;
+			return false;
 		}
 
 		this.mismatches.put(new BlockMismatch(type, expected, found), pos.immutable());
 		this.storedPositions++;
+
+		return true;
+	}
+
+	/**
+	 * Records a Wrong Contents mismatch, keeping both sides' block entity data while there is
+	 * room for it, so that the client can show the two inventories side by side.
+	 */
+	public void addWrongContents(BlockState expected, BlockState found, BlockPos pos,
+	                             @Nullable CompoundData expectedData, CompoundData foundData)
+	{
+		if (this.add(VerifyMismatchType.WRONG_NBT, expected, found, pos) &&
+			expectedData != null && this.contents.size() < this.maxContents)
+		{
+			this.contents.put(pos.immutable(), new ContentsDetail(expectedData, foundData));
+		}
+	}
+
+	@Nullable
+	public ContentsDetail getContents(BlockPos pos)
+	{
+		return this.contents.get(pos);
+	}
+
+	public boolean hasContents()
+	{
+		return this.contents.isEmpty() == false;
+	}
+
+	/** How the contents were compared, which the client needs to point out the same differences. */
+	public void setContentsComparison(boolean slotExact, boolean strict)
+	{
+		this.contentsSlotExact = slotExact;
+		this.contentsStrict = strict;
+	}
+
+	public boolean isContentsSlotExact()
+	{
+		return this.contentsSlotExact;
+	}
+
+	public boolean isContentsStrict()
+	{
+		return this.contentsStrict;
 	}
 
 	public void addCorrectState(BlockState state, boolean countsTowardsSchematic)
@@ -200,5 +258,10 @@ public class VerifyResult
 	public boolean isPerfectMatch()
 	{
 		return this.getTotalMismatches() == 0 && this.getSkippedChunks() == 0;
+	}
+
+	/** One side each of a container whose contents do not match: the schematic's, and the world's. */
+	public record ContentsDetail(CompoundData expected, CompoundData found)
+	{
 	}
 }
