@@ -11,6 +11,7 @@ import net.minecraft.world.level.block.state.BlockState;
 
 import fi.dy.masa.servux.Servux;
 import fi.dy.masa.servux.schematic.placement.SchematicPlacement;
+import fi.dy.masa.servux.schematic.verifier.VerifyEntityMatcher;
 import fi.dy.masa.servux.schematic.verifier.VerifyMismatchType;
 import fi.dy.masa.servux.schematic.verifier.VerifyNbtComparator;
 import fi.dy.masa.servux.schematic.verifier.VerifyResult;
@@ -31,6 +32,8 @@ public class SchematicVerifyUtils
 	/**
 	 * Verifies every sub-region of the given placement that touches {@code chunkPos}.
 	 *
+	 * @param entityMatcher checks the entities the placement would spawn here, or null to
+	 *                      leave entities out; the chunk's entities must already be loaded
 	 * @return false if any sub-region had missing/invalid schematic data
 	 */
 	public static boolean verifyWorldWithinChunk(ServerLevel world,
@@ -39,10 +42,13 @@ public class SchematicVerifyUtils
 	                                             PasteLayerBehavior layerBehavior,
 	                                             @Nullable LayerRange layerRange,
 	                                             VerifyResult result,
-	                                             @Nullable VerifyNbtComparator nbtComparator)
+	                                             @Nullable VerifyNbtComparator nbtComparator,
+	                                             @Nullable VerifyEntityMatcher entityMatcher)
 	{
-		// Entities are not verified: Litematica's own verifier does not compare them either,
-		// and there is no stable identity to pair a schematic entity with a world one by
+		// Null skips the entity walk outright, rather than walking it to discard everything
+		SchematicRegionWalker.EntityVisitor entityVisitor =
+				entityMatcher != null ? (pos, nbt) -> entityMatcher.verify(world, pos, nbt, result) : null;
+
 		return SchematicRegionWalker.walkChunk(chunkPos, schematicPlacement, layerBehavior, layerRange,
 		                                       (pos, expected, teNBT) ->
 		                                       {
@@ -56,7 +62,7 @@ public class SchematicVerifyUtils
 				                                       verifyBlockEntity(world, pos, expected, found, teNBT, result, nbtComparator);
 			                                       }
 		                                       },
-		                                       null);
+		                                       entityVisitor);
 	}
 
 	/**

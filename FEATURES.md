@@ -21,11 +21,13 @@ Servux New Features (0.3.7+)
   * Provides backend setting for `fix_rail_rotations`, `fix_stairs_mirror`, && `fix_chest_mirror`.
   * Litematic Paste operations has a separate permissions node.
   * Provides server side Schematic Verification via `/servux verify`, which is not bound by the client's render distance.  Verification is read-only: it never writes to the world, never generates terrain, and never stalls the server thread.
-    * Mismatches are reported per category (`Missing`, `Extra`, `Wrong Block`, `Wrong State`, `Wrong Contents`), with clickable coordinates that suggest a teleport, so the results are usable from vanilla clients with no mod installed.
+    * Mismatches are reported per category (`Missing`, `Extra`, `Wrong Block`, `Wrong State`, `Wrong Contents`, `Missing Entities`), with clickable coordinates that suggest a teleport, so the results are usable from vanilla clients with no mod installed.
     * Chunks outside the client's render distance are loaded on demand, so a verification covers the whole build.  Loading is non-blocking and the chunks are loaded but §onot ticked§r -- no mob spawning, no redstone, no block or random ticks.  Chunks that have never been generated are §oreported, not generated§r, so inspecting a build never enlarges the world; `chunk_walk_generate_missing_chunks` opts into generating them.  New loads back off while the server's tick time is high (`chunk_walk_pause_mspt_threshold`), and a walk that can never catch up ends with the remainder reported rather than sitting in the scheduler forever.
     * `Wrong Contents` compares container inventories, which Litematica's client side verifier cannot do at all -- it only compares block states, so an empty chest counts as correct there.  Only checked where the block state already matches, so this count overlaps the correct-state count rather than adding to the other categories.
       * A client asks for it per verification (Litematica's `verifierCheckContents`, off by default); `verify_nbt` decides whether the server allows it at all.  A client that predates the option gets the comparison whenever `verify_nbt` is on.
       * The first `verify_nbt_detail_positions` of these also carry both containers' contents back to the client, which shows the schematic's and the world's inventory side by side.
+    * `Missing Entities` lists the schematic's entities that are not in the world, by Litematica's own rules: a world entity of the same type within the position tolerance counts, each world entity stands in for one schematic entity only, and mobs, items, XP orbs and projectiles are not checked (armor stands are).  Unlike Litematica's client side check this is not limited by the entity tracking range.
+      * A client asks for it per verification (Litematica's `verifierCheckEntities`) and sends its own `verifierEntityPositionTolerance`.  A verification started from a command always checks entities, with a tolerance of 0.1 blocks.
     * Can verify schematics already shared through Syncmatica without an upload, by reading its placement manifest from disk.  This is a read-only, unofficial interface and can be turned off with `verify_syncmatica_interop`.
     * Verify operations have a separate permissions node.
     * Results are streamed to the client in acknowledged batches (`task_batch_positions`), so a verification covering millions of positions never builds one oversized packet.  A session that nobody acknowledges is discarded after `task_session_timeout`.
@@ -57,7 +59,7 @@ Servux New Features (0.3.7+)
   * `verify start` [placement] -- Starts a server side verification of a shared [placement], given by display name or UUID.
   * `verify status` -- Shows the progress of the verifications currently running.
   * `verify cancel` [session] -- Cancels a running verification; defaults to your own.
-  * `verify show` [category] [page] -- Lists the mismatches of one [category] from your latest verification.  Each coordinate can be clicked to auto-complete a teleport to it.
+  * `verify show` [category] [page] -- Lists the mismatches of one [category] (`missing`, `extra`, `wrong_block`, `wrong_state`, `wrong_nbt`, `missing_entity`) from your latest verification.  Each coordinate can be clicked to auto-complete a teleport to it.
   * `analyze start` [from] [to] [entities] [containers] -- Starts a server side analysis of the region between the two corners.  [entities] and [containers] are optional and default to counting both.
   * `analyze status` -- Shows the progress of the analyses currently running.
   * `analyze cancel` [session] -- Cancels a running analysis; defaults to your own.
@@ -166,6 +168,6 @@ Servux New Features (0.3.7+)
 * Add Syncmatica-like protocol for Litematica.
   * Read-only Syncmatica interop already exists for `/servux verify`; sharing schematics over Servux's own channel is still to come.
 * Extend the server side task sessions:
-  * Compare entities during verification, as well as blocks and container contents.
+  * Compare entities further during verification: entities that are only in the world, and the contents of item frames and armor stands.
   * Server side schematic saving.  The task exists but nothing starts it yet, on either side.
   * Let a client cancel a fill or delete.  Those run on the upstream task manager, which tracks no owner, so only the session driven tasks can currently be stopped on request.

@@ -10,6 +10,7 @@ import net.minecraft.world.level.ChunkPos;
 
 import fi.dy.masa.servux.scheduler.TaskContext;
 import fi.dy.masa.servux.schematic.placement.SchematicPlacement;
+import fi.dy.masa.servux.schematic.verifier.VerifyEntityMatcher;
 import fi.dy.masa.servux.schematic.verifier.VerifyNbtComparator;
 import fi.dy.masa.servux.schematic.verifier.VerifyResult;
 import fi.dy.masa.servux.util.PasteLayerBehavior;
@@ -26,6 +27,10 @@ import fi.dy.masa.servux.util.position.LayerRange;
  * blocks a paste of the same placement would write. Everything about pacing, chunk loading
  * and giving up lives in {@link TaskChunkWalkerBase}; all that is left here is the
  * comparison itself.
+ * <p>
+ * When entities are verified too, a chunk additionally has to wait for its entities. Those
+ * load separately from, and after, the chunk's blocks, so a chunk that has only just
+ * become readable would otherwise report every entity in it as missing.
  */
 public class TaskVerifySchematicPerChunk extends TaskChunkWalkerBase
 {
@@ -36,6 +41,8 @@ public class TaskVerifySchematicPerChunk extends TaskChunkWalkerBase
 	private final ArrayListMultimap<ChunkPos, SchematicPlacement> placementsPerChunk = ArrayListMultimap.create();
 	private final VerifyResult result;
 	@Nullable private final VerifyNbtComparator nbtComparator;
+	@Nullable private final VerifyEntityMatcher entityMatcher;
+	private boolean waitingForEntities;
 
 	public TaskVerifySchematicPerChunk(TaskContext context,
 	                                   Collection<SchematicPlacement> placements,
@@ -44,6 +51,7 @@ public class TaskVerifySchematicPerChunk extends TaskChunkWalkerBase
 	                                   VerifyResult result,
 	                                   @Nullable ServerChunkLoader chunkLoader,
 	                                   @Nullable VerifyNbtComparator nbtComparator,
+	                                   @Nullable VerifyEntityMatcher entityMatcher,
 	                                   int pauseMsptThreshold,
 	                                   @Nullable Runnable onComplete)
 	{
@@ -54,6 +62,7 @@ public class TaskVerifySchematicPerChunk extends TaskChunkWalkerBase
 		this.layerBehavior = layerBehavior;
 		this.result = result;
 		this.nbtComparator = nbtComparator;
+		this.entityMatcher = entityMatcher;
 	}
 
 	public VerifyResult getResult()
@@ -79,6 +88,35 @@ public class TaskVerifySchematicPerChunk extends TaskChunkWalkerBase
 	}
 
 	@Override
+	protected boolean canProcessChunk(ChunkPos pos)
+	{
+		if (super.canProcessChunk(pos) == false)
+		{
+			return false;
+		}
+
+		// Checked after the loader has had its say, so that a chunk it is still bringing in
+		// keeps being driven; once the blocks are there, this only waits for the entities
+		if (this.entityMatcher == null || this.context.level().areEntitiesLoaded(pos.pack()))
+		{
+			return true;
+		}
+
+		this.waitingForEntities = true;
+
+		return false;
+	}
+
+	@Override
+	protected boolean isWaitingOnChunkData()
+	{
+		boolean waiting = this.waitingForEntities;
+		this.waitingForEntities = false;
+
+		return waiting;
+	}
+
+	@Override
 	protected boolean processChunk(ChunkPos pos)
 	{
 		// New list to avoid CME
@@ -88,7 +126,7 @@ public class TaskVerifySchematicPerChunk extends TaskChunkWalkerBase
 		{
 			SchematicVerifyUtils.verifyWorldWithinChunk(this.context.level(), pos, placement,
 			                                            this.layerBehavior, this.layerRange,
-			                                            this.result, this.nbtComparator);
+			                                            this.result, this.nbtComparator, this.entityMatcher);
 
 			this.placementsPerChunk.remove(pos, placement);
 		}

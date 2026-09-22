@@ -12,6 +12,7 @@ import it.unimi.dsi.fastutil.objects.Object2IntOpenHashMap;
 
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.phys.Vec3;
 
 import fi.dy.masa.servux.scheduler.ChunkWalkProgress;
 import fi.dy.masa.servux.util.data.tag.CompoundData;
@@ -48,6 +49,9 @@ public class VerifyResult
 	private final Map<BlockPos, ContentsDetail> contents = new HashMap<>();
 	private boolean contentsSlotExact;
 	private boolean contentsStrict;
+	/** Schematic entities with no counterpart in the world, in the order they were found. */
+	private final List<MissingEntity> missingEntities = new ArrayList<>();
+	private boolean entitiesChecked;
 
 	private int schematicBlocks;
 	private int worldBlocks;
@@ -130,6 +134,42 @@ public class VerifyResult
 	public boolean isContentsStrict()
 	{
 		return this.contentsStrict;
+	}
+
+	/**
+	 * Records a schematic entity that has no counterpart in the world.
+	 * <p>
+	 * Shares the position cap with the block mismatches: past it the entity is still
+	 * counted, it just is not listed.
+	 */
+	public void addMissingEntity(String entityId, Vec3 pos)
+	{
+		this.categoryCounts[VerifyMismatchType.MISSING_ENTITY.ordinal()]++;
+
+		if (this.storedPositions >= this.maxPositions)
+		{
+			this.truncated = true;
+			return;
+		}
+
+		this.missingEntities.add(new MissingEntity(entityId, pos));
+		this.storedPositions++;
+	}
+
+	public List<MissingEntity> getMissingEntities()
+	{
+		return this.missingEntities;
+	}
+
+	/** Whether this run compared entities at all, as opposed to finding none missing. */
+	public void setEntitiesChecked(boolean checked)
+	{
+		this.entitiesChecked = checked;
+	}
+
+	public boolean isEntitiesChecked()
+	{
+		return this.entitiesChecked;
 	}
 
 	public void addCorrectState(BlockState state, boolean countsTowardsSchematic)
@@ -258,6 +298,11 @@ public class VerifyResult
 	public boolean isPerfectMatch()
 	{
 		return this.getTotalMismatches() == 0 && this.getSkippedChunks() == 0;
+	}
+
+	/** A schematic entity that is not in the world: its registry id and where it should be. */
+	public record MissingEntity(String entityId, Vec3 pos)
+	{
 	}
 
 	/** One side each of a container whose contents do not match: the schematic's, and the world's. */

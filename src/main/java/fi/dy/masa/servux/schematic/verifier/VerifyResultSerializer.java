@@ -35,6 +35,10 @@ import fi.dy.masa.servux.util.data.tag.ListData;
  * lockstep - and they do not: forks add their own categories (an entity mismatch category,
  * for instance) part way through the enum, which silently shifts every later value. A short
  * name per distinct pair costs nothing measurable and cannot be misread.
+ * <p>
+ * Missing entities follow the block pairs, in a list of their own ({@code Entities}): an
+ * entity is not a block state pair, and its position is not on the block grid. Each one
+ * costs one position of the batch budget.
  */
 public class VerifyResultSerializer implements IResultBatcher
 {
@@ -46,20 +50,24 @@ public class VerifyResultSerializer implements IResultBatcher
 	/** The flattened pair list, so that batching can resume mid-pair. */
 	private final List<Map.Entry<BlockMismatch, Collection<BlockPos>>> pairs = new ArrayList<>();
 
+	private final List<VerifyResult.MissingEntity> entities;
+
 	private int pairIndex;
 	private int positionIndex;
+	private int entityIndex;
 	private int batch;
 
 	public VerifyResultSerializer(VerifyResult result)
 	{
 		this.result = result;
 		this.pairs.addAll(result.getMismatches().asMap().entrySet());
+		this.entities = result.getMissingEntities();
 	}
 
 	@Override
 	public boolean hasMore()
 	{
-		return this.pairIndex < this.pairs.size();
+		return this.pairIndex < this.pairs.size() || this.entityIndex < this.entities.size();
 	}
 
 	@Override
@@ -140,6 +148,22 @@ public class VerifyResultSerializer implements IResultBatcher
 			}
 		}
 
+		ListData entities = new ListData();
+
+		// Only once every block pair is out, so that a batch never has to be read out of order
+		while (budget > 0 && this.pairIndex >= this.pairs.size() && this.entityIndex < this.entities.size())
+		{
+			VerifyResult.MissingEntity entity = this.entities.get(this.entityIndex++);
+			CompoundData element = new CompoundData();
+
+			element.putString("Type", entity.entityId());
+			element.putDouble("X", entity.pos().x);
+			element.putDouble("Y", entity.pos().y);
+			element.putDouble("Z", entity.pos().z);
+			entities.add(element);
+			budget--;
+		}
+
 		int[] paletteIds = new int[paletteOrder.size()];
 
 		for (int i = 0; i < paletteOrder.size(); i++)
@@ -153,6 +177,11 @@ public class VerifyResultSerializer implements IResultBatcher
 		if (contents.isEmpty() == false)
 		{
 			tag.put("Contents", contents);
+		}
+
+		if (entities.isEmpty() == false)
+		{
+			tag.put("Entities", entities);
 		}
 
 		boolean last = !this.hasMore();
@@ -182,6 +211,8 @@ public class VerifyResultSerializer implements IResultBatcher
 		totals.putBoolean("Truncated", this.result.isTruncated());
 		totals.putBoolean("ContentsSlotExact", this.result.isContentsSlotExact());
 		totals.putBoolean("ContentsStrict", this.result.isContentsStrict());
+		totals.putBoolean("EntitiesChecked", this.result.isEntitiesChecked());
+		totals.putInt("MissingEntities", this.result.getCategoryCount(VerifyMismatchType.MISSING_ENTITY));
 
 		// The per-state correct counts, so the client can show the Correct State category
 		Object2IntOpenHashMap<BlockState> correct = this.result.getCorrectStateCounts();
