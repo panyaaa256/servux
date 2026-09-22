@@ -56,6 +56,7 @@ import fi.dy.masa.servux.schematic.placement.SchematicPlacement;
 import fi.dy.masa.servux.schematic.selection.AreaSelection;
 import fi.dy.masa.servux.schematic.selection.Box;
 import fi.dy.masa.servux.schematic.transmit.SchematicBufferManager;
+import fi.dy.masa.servux.schematic.verifier.VerifyEntityMatcher;
 import fi.dy.masa.servux.schematic.verifier.VerifyNbtComparator;
 import fi.dy.masa.servux.schematic.verifier.VerifyReport;
 import fi.dy.masa.servux.schematic.verifier.VerifyResult;
@@ -176,6 +177,7 @@ public class LitematicsDataProvider extends DataProviderBase
 		ListData features = new ListData();
 		features.add(new StringData("verify"));
 		features.add(new StringData("verify_nbt"));
+		features.add(new StringData("verify_entities"));
 		features.add(new StringData(ServerTaskKind.ANALYZE.getName()));
 		features.add(new StringData(ServerTaskKind.MATERIALS.getName()));
 		this.metadata.put("Features", features);
@@ -1092,7 +1094,8 @@ public class LitematicsDataProvider extends DataProviderBase
 	                                 @Nullable CommandSourceStack source,
 	                                 @Nullable Consumer<VerifySession> onComplete)
 	{
-		return this.startVerify(level, placement, layerRange, owner, source, null, true, onComplete);
+		return this.startVerify(level, placement, layerRange, owner, source, null, true,
+		                        true, VerifyEntityMatcher.DEFAULT_TOLERANCE, onComplete);
 	}
 
 	/**
@@ -1100,6 +1103,9 @@ public class LitematicsDataProvider extends DataProviderBase
 	 *                        supplies its own so it can match the replies to its request.
 	 * @param compareContents whether the requester wants container contents compared at all;
 	 *                        they only are when {@code verify_nbt} also allows it
+	 * @param compareEntities whether to report the schematic's entities that are not in the world
+	 * @param entityTolerance how far, in blocks, a world entity may be from where the schematic
+	 *                        puts it and still count as that entity
 	 */
 	@Nullable
 	public VerifySession startVerify(ServerLevel level,
@@ -1109,6 +1115,8 @@ public class LitematicsDataProvider extends DataProviderBase
 	                                 @Nullable CommandSourceStack source,
 	                                 @Nullable UUID sessionId,
 	                                 boolean compareContents,
+	                                 boolean compareEntities,
+	                                 double entityTolerance,
 	                                 @Nullable Consumer<VerifySession> onComplete)
 	{
 		ServerPlayer player = this.taskPlayerFor(level, owner, source);
@@ -1146,9 +1154,12 @@ public class LitematicsDataProvider extends DataProviderBase
 		// The client highlights the differing slots itself, so it has to compare the way we did
 		result.setContentsComparison(this.verifyNbtSlotExact.getValue(), this.verifyNbtStrict.getValue());
 
+		VerifyEntityMatcher entityMatcher = compareEntities ? new VerifyEntityMatcher(entityTolerance) : null;
+		result.setEntitiesChecked(entityMatcher != null);
+
 		TaskVerifySchematicPerChunk task = new TaskVerifySchematicPerChunk(
 				ctx, Collections.singletonList(placement), layerRange, layerBehavior, result,
-				chunkLoader, nbtComparator, this.chunkWalkPauseMsptThreshold.getValue(), null);
+				chunkLoader, nbtComparator, entityMatcher, this.chunkWalkPauseMsptThreshold.getValue(), null);
 
 		task.setOnProgress(() -> this.sendVerifyStatus(session));
 
@@ -1232,8 +1243,17 @@ public class LitematicsDataProvider extends DataProviderBase
 		// A client that predates the option does not send it, and gets what it always got
 		boolean compareContents = tags.contains("VerifyNbt", Constants.NBT.TAG_BYTE) == false || tags.getBoolean("VerifyNbt");
 
+		// Entities, on the other hand, are only compared when asked for: a client that predates
+		// them would have nowhere to show the result. The tolerance is the client's own
+		// verifierEntityPositionTolerance, so that it matches what a local run would find.
+		boolean compareEntities = tags.contains("VerifyEntities", Constants.NBT.TAG_BYTE) && tags.getBoolean("VerifyEntities");
+		double entityTolerance = tags.contains("EntityTolerance", Constants.NBT.TAG_DOUBLE)
+		                         ? tags.getDouble("EntityTolerance")
+		                         : VerifyEntityMatcher.DEFAULT_TOLERANCE;
+
 		VerifySession session = this.startVerify(player.level(), placement, layerRange, player.getUUID(), null,
-		                                         sessionId, compareContents, this::beginVerifyStreaming);
+		                                         sessionId, compareContents, compareEntities, entityTolerance,
+		                                         this::beginVerifyStreaming);
 
 		if (session == null)
 		{

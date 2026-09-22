@@ -269,6 +269,8 @@ public abstract class TaskChunkWalkerBase extends TaskProcessChunkBase
 		// the TPS backoff or on an in-flight load is progress, not a stall - but the wait
 		// is still bounded, so a permanently overloaded server cannot strand the task.
 		boolean waiting = paused || (this.chunkLoader != null && this.chunkLoader.getPendingRequests() > 0);
+		// Evaluated unconditionally, since it also resets the subclass' per-tick state
+		waiting |= this.isWaitingOnChunkData();
 
 		if (processedThisTick > 0 || budgetExhausted)
 		{
@@ -332,6 +334,18 @@ public abstract class TaskChunkWalkerBase extends TaskProcessChunkBase
 		profiler.pop();
 
 		return true;
+	}
+
+	/**
+	 * Whether a chunk this tick was held back only because something the subclass needs from
+	 * it is still on its way, such as its entities, which load after its blocks. A wait like
+	 * that is not a stall; it is bounded the same way as waiting on a chunk load.
+	 * <p>
+	 * Called once per tick, after the tick's chunks have been tried.
+	 */
+	protected boolean isWaitingOnChunkData()
+	{
+		return false;
 	}
 
 	/**
