@@ -279,6 +279,49 @@ public class SchematicRegionWalker
 	}
 
 	/**
+	 * Walks only the entities {@link #walkChunk} would hand over for this chunk, under the
+	 * same gates, without touching any blocks.
+	 */
+	public static void walkEntitiesInChunk(ChunkPos chunkPos,
+	                                       SchematicPlacement schematicPlacement,
+	                                       PasteLayerBehavior layerBehavior,
+	                                       @Nullable LayerRange layerRange,
+	                                       EntityVisitor entityVisitor)
+	{
+		if (schematicPlacement.ignoreEntities())
+		{
+			return;
+		}
+
+		LitematicaSchematic schematic = schematicPlacement.getSchematic();
+		BlockPos origin = schematicPlacement.getOrigin();
+
+		for (String regionName : schematicPlacement.getRegionsTouchingChunk(chunkPos.x(), chunkPos.z()))
+		{
+			// walkChunk() skips a region without block data altogether, entities included
+			if (schematic.getSubRegionContainer(regionName) == null)
+			{
+				continue;
+			}
+
+			SubRegionPlacement placement = schematicPlacement.getRelativeSubRegionPlacement(regionName);
+
+			if (placement == null || !placement.isEnabled() || placement.ignoreEntities())
+			{
+				continue;
+			}
+
+			List<EntityInfo> entityList = schematic.getEntityListForRegion(regionName);
+
+			if (entityList != null)
+			{
+				walkEntitiesWithinChunk(chunkPos, entityList, origin, schematicPlacement, placement,
+				                        layerBehavior, layerRange, entityVisitor);
+			}
+		}
+	}
+
+	/**
 	 * Hands over the entities of one sub-region that land inside this chunk.
 	 * <p>
 	 * The chunk test is on the transformed position, exactly as in the paste path, so an

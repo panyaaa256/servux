@@ -5,6 +5,7 @@ import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import javax.annotation.Nullable;
 import com.google.common.collect.ArrayListMultimap;
 import com.google.common.collect.Multimap;
@@ -51,7 +52,10 @@ public class VerifyResult
 	private boolean contentsStrict;
 	/** Schematic entities with no counterpart in the world, in the order they were found. */
 	private final List<MissingEntity> missingEntities = new ArrayList<>();
+	/** Schematic entities that were found, with the world entity each was found as; see {@link #setReportMatchedEntities}. */
+	private final List<MatchedEntity> matchedEntities = new ArrayList<>();
 	private boolean entitiesChecked;
+	private boolean reportMatchedEntities;
 
 	private int schematicBlocks;
 	private int worldBlocks;
@@ -159,6 +163,38 @@ public class VerifyResult
 	public List<MissingEntity> getMissingEntities()
 	{
 		return this.missingEntities;
+	}
+
+	/**
+	 * Whether to keep the pairs that were found as well, for a client that asks for them.
+	 * <p>
+	 * A client keeps a server result up to date from the entities it is sent as the player
+	 * moves around. Without knowing which world entity already stands for which schematic
+	 * entity, it would take any of them coming into range for a missing one nearby - one of
+	 * two minecarts placed in the same spot, say, for the other one that is missing.
+	 */
+	public void setReportMatchedEntities(boolean report)
+	{
+		this.reportMatchedEntities = report;
+	}
+
+	/**
+	 * Records a schematic entity that was found in the world, if those are being reported.
+	 * <p>
+	 * Not capped like the mismatches: every one the client is not told about is one it could
+	 * pair up wrongly, and there are only as many as the schematic has entities.
+	 */
+	public void addMatchedEntity(String entityId, Vec3 pos, UUID worldEntity)
+	{
+		if (this.reportMatchedEntities)
+		{
+			this.matchedEntities.add(new MatchedEntity(entityId, pos, worldEntity));
+		}
+	}
+
+	public List<MatchedEntity> getMatchedEntities()
+	{
+		return this.matchedEntities;
 	}
 
 	/** Whether this run compared entities at all, as opposed to finding none missing. */
@@ -302,6 +338,11 @@ public class VerifyResult
 
 	/** A schematic entity that is not in the world: its registry id and where it should be. */
 	public record MissingEntity(String entityId, Vec3 pos)
+	{
+	}
+
+	/** A schematic entity that is in the world: where it should be, and the world entity found there. */
+	public record MatchedEntity(String entityId, Vec3 pos, UUID worldEntity)
 	{
 	}
 
