@@ -2,10 +2,15 @@ package fi.dy.masa.servux.scheduler.tasks;
 
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Map;
+import java.util.Set;
 import javax.annotation.Nullable;
 import com.google.common.collect.ArrayListMultimap;
 import com.google.common.collect.ImmutableList;
 
+import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.ChunkPos;
 
 import fi.dy.masa.servux.scheduler.TaskContext;
@@ -15,6 +20,7 @@ import fi.dy.masa.servux.schematic.verifier.VerifyNbtComparator;
 import fi.dy.masa.servux.schematic.verifier.VerifyResult;
 import fi.dy.masa.servux.util.PasteLayerBehavior;
 import fi.dy.masa.servux.util.SchematicChunkPartitioner;
+import fi.dy.masa.servux.util.SchematicRegionWalker;
 import fi.dy.masa.servux.util.SchematicVerifyUtils;
 import fi.dy.masa.servux.util.chunk.ServerChunkLoader;
 import fi.dy.masa.servux.util.LayerRange;
@@ -43,6 +49,15 @@ public class TaskVerifySchematicPerChunk extends TaskChunkWalkerBase
 	@Nullable private final VerifyNbtComparator nbtComparator;
 	@Nullable private final VerifyEntityMatcher entityMatcher;
 	private boolean waitingForEntities;
+	/**
+	 * Per chunk, the other chunks its entities are searched for in: the search reaches up to
+	 * the tolerance past each entity, which can be across a chunk border.
+	 */
+	private final Map<ChunkPos, Set<ChunkPos>> entitySearchChunks = new HashMap<>();
+	/** Neighbouring chunks this task holds a ticket on only for their entities. */
+	private final Set<ChunkPos> neighbourTickets = new HashSet<>();
+	/** Neighbouring chunks that were never generated, so that they are not probed again. */
+	private final Set<ChunkPos> ungeneratedNeighbours = new HashSet<>();
 
 	public TaskVerifySchematicPerChunk(TaskContext context,
 	                                   Collection<SchematicPlacement> placements,
@@ -95,9 +110,26 @@ public class TaskVerifySchematicPerChunk extends TaskChunkWalkerBase
 			return false;
 		}
 
+		if (this.entityMatcher == null)
+		{
+			return true;
+		}
+
 		// Checked after the loader has had its say, so that a chunk it is still bringing in
 		// keeps being driven; once the blocks are there, this only waits for the entities
-		if (this.entityMatcher == null || this.context.level().areEntitiesLoaded(pos.toLong()))
+		boolean ready = this.context.level().areEntitiesLoaded(pos.toLong());
+
+		// Every neighbour is driven each time rather than stopping at the first one not ready,
+		// so that they load side by side
+		for (ChunkPos other : this.getEntitySearchChunks(pos))
+		{
+			if (other.equals(pos) == false && this.areNeighbourEntitiesReady(other) == false)
+			{
+				ready = false;
+			}
+		}
+
+		if (ready)
 		{
 			return true;
 		}
@@ -105,6 +137,58 @@ public class TaskVerifySchematicPerChunk extends TaskChunkWalkerBase
 		this.waitingForEntities = true;
 
 		return false;
+	}
+
+	private Set<ChunkPos> getEntitySearchChunks(ChunkPos pos)
+	{
+		return this.entitySearchChunks.computeIfAbsent(pos, p ->
+		{
+			Set<ChunkPos> chunks = new HashSet<>();
+
+			for (SchematicPlacement placement : this.placementsPerChunk.get(p))
+			{
+				SchematicRegionWalker.walkEntitiesInChunk(p, placement, this.layerBehavior, this.layerRange,
+				                                          (worldPos, nbt) -> this.entityMatcher.collectSearchChunks(this.context.level(), worldPos, nbt, chunks));
+			}
+
+			return chunks;
+		});
+	}
+
+	/**
+	 * Whether a neighbouring chunk's entities can be searched, bringing it in if it has to be.
+	 * <p>
+	 * Without a loader the walk only ever reads what is loaded already, so a neighbour that
+	 * is not is passed over, as before. One that was never generated has no entities.
+	 */
+	private boolean areNeighbourEntitiesReady(ChunkPos pos)
+	{
+		ServerLevel level = this.context.level();
+
+		if (level.getChunkSource().hasChunk(pos.x, pos.z) == false)
+		{
+			if (this.chunkLoader == null || this.ungeneratedNeighbours.contains(pos))
+			{
+				return true;
+			}
+
+			ServerChunkLoader.Result result = this.chunkLoader.request(pos);
+
+			if (result == ServerChunkLoader.Result.UNGENERATED)
+			{
+				this.ungeneratedNeighbours.add(pos);
+				return true;
+			}
+
+			this.neighbourTickets.add(pos);
+
+			if (result != ServerChunkLoader.Result.READY)
+			{
+				return false;
+			}
+		}
+
+		return level.areEntitiesLoaded(pos.toLong());
 	}
 
 	@Override
@@ -137,8 +221,39 @@ public class TaskVerifySchematicPerChunk extends TaskChunkWalkerBase
 		if (this.chunkLoader != null)
 		{
 			this.chunkLoader.release(pos);
+			this.neighbourTickets.remove(pos);
+		}
+
+		Set<ChunkPos> searched = this.entitySearchChunks.remove(pos);
+
+		if (searched != null && this.chunkLoader != null)
+		{
+			for (ChunkPos other : searched)
+			{
+				// One the walk still has to visit keeps its ticket until then
+				if (this.neighbourTickets.contains(other) && this.pendingChunks.contains(other) == false &&
+				    this.isSearchedByPendingChunk(other) == false)
+				{
+					this.chunkLoader.release(other);
+					this.neighbourTickets.remove(other);
+				}
+			}
 		}
 
 		return this.placementsPerChunk.containsKey(pos) == false;
+	}
+
+	/** Whether another chunk that has yet to be processed needs this one's entities too. */
+	private boolean isSearchedByPendingChunk(ChunkPos pos)
+	{
+		for (Set<ChunkPos> chunks : this.entitySearchChunks.values())
+		{
+			if (chunks.contains(pos))
+			{
+				return true;
+			}
+		}
+
+		return false;
 	}
 }

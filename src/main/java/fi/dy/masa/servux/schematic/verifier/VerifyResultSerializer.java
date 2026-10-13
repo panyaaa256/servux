@@ -39,6 +39,11 @@ import fi.dy.masa.servux.util.data.tag.ListData;
  * Missing entities follow the block pairs, in a list of their own ({@code Entities}): an
  * entity is not a block state pair, and its position is not on the block grid. Each one
  * costs one position of the batch budget.
+ * <p>
+ * When the client asked for them, the entities that were found come before the missing
+ * ones ({@code MatchedEntities}), each with the UUID of the world entity it was found as.
+ * They go first so that the client knows which world entities are spoken for before it
+ * sees any missing entity one of them could be mistaken for.
  */
 public class VerifyResultSerializer implements IResultBatcher
 {
@@ -50,10 +55,12 @@ public class VerifyResultSerializer implements IResultBatcher
 	/** The flattened pair list, so that batching can resume mid-pair. */
 	private final List<Map.Entry<BlockMismatch, Collection<BlockPos>>> pairs = new ArrayList<>();
 
+	private final List<VerifyResult.MatchedEntity> matchedEntities;
 	private final List<VerifyResult.MissingEntity> entities;
 
 	private int pairIndex;
 	private int positionIndex;
+	private int matchedIndex;
 	private int entityIndex;
 	private int batch;
 
@@ -61,13 +68,16 @@ public class VerifyResultSerializer implements IResultBatcher
 	{
 		this.result = result;
 		this.pairs.addAll(result.getMismatches().asMap().entrySet());
+		this.matchedEntities = result.getMatchedEntities();
 		this.entities = result.getMissingEntities();
 	}
 
 	@Override
 	public boolean hasMore()
 	{
-		return this.pairIndex < this.pairs.size() || this.entityIndex < this.entities.size();
+		return this.pairIndex < this.pairs.size() ||
+		       this.matchedIndex < this.matchedEntities.size() ||
+		       this.entityIndex < this.entities.size();
 	}
 
 	@Override
@@ -148,10 +158,27 @@ public class VerifyResultSerializer implements IResultBatcher
 			}
 		}
 
-		ListData entities = new ListData();
+		ListData matched = new ListData();
 
 		// Only once every block pair is out, so that a batch never has to be read out of order
-		while (budget > 0 && this.pairIndex >= this.pairs.size() && this.entityIndex < this.entities.size())
+		while (budget > 0 && this.pairIndex >= this.pairs.size() && this.matchedIndex < this.matchedEntities.size())
+		{
+			VerifyResult.MatchedEntity entity = this.matchedEntities.get(this.matchedIndex++);
+			CompoundData element = new CompoundData();
+
+			element.putString("Type", entity.entityId());
+			element.putDouble("X", entity.pos().x);
+			element.putDouble("Y", entity.pos().y);
+			element.putDouble("Z", entity.pos().z);
+			element.putIntArray("UUID", uuidToIntArray(entity.worldEntity()));
+			matched.add(element);
+			budget--;
+		}
+
+		ListData entities = new ListData();
+
+		while (budget > 0 && this.pairIndex >= this.pairs.size() && this.matchedIndex >= this.matchedEntities.size() &&
+		       this.entityIndex < this.entities.size())
 		{
 			VerifyResult.MissingEntity entity = this.entities.get(this.entityIndex++);
 			CompoundData element = new CompoundData();
@@ -177,6 +204,11 @@ public class VerifyResultSerializer implements IResultBatcher
 		if (contents.isEmpty() == false)
 		{
 			tag.put("Contents", contents);
+		}
+
+		if (matched.isEmpty() == false)
+		{
+			tag.put("MatchedEntities", matched);
 		}
 
 		if (entities.isEmpty() == false)
