@@ -7,9 +7,11 @@ import java.util.UUID;
 import javax.annotation.Nullable;
 import it.unimi.dsi.fastutil.objects.Object2BooleanOpenHashMap;
 
+import net.minecraft.core.SectionPos;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.resources.Identifier;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.util.Mth;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntitySpawnReason;
 import net.minecraft.world.entity.EntityType;
@@ -18,6 +20,7 @@ import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.decoration.ArmorStand;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.projectile.Projectile;
+import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 
@@ -87,10 +90,43 @@ public class VerifyEntityMatcher
 		if (match != null)
 		{
 			this.claimedWorldEntities.add(match.getUUID());
+			result.addMatchedEntity(id.toString(), worldPos, match.getUUID());
 		}
 		else
 		{
 			result.addMissingEntity(id.toString(), worldPos);
+		}
+	}
+
+	/**
+	 * Adds the chunks whose entities {@link #verify} would search for this schematic entity.
+	 * <p>
+	 * The search reaches up to the tolerance past where the entity should be, which can be
+	 * across a chunk border: an entity found there only counts if that chunk's entities are
+	 * loaded too, or it would be reported as missing.
+	 */
+	public void collectSearchChunks(ServerLevel world, Vec3 worldPos, CompoundData nbt, Set<ChunkPos> chunks)
+	{
+		Identifier id = Identifier.tryParse(nbt.getStringOrDefault("id", ""));
+		EntityType<?> type = id != null ? BuiltInRegistries.ENTITY_TYPE.getOptional(id).orElse(null) : null;
+
+		if (type == null || !this.isVerifiableType(world, type))
+		{
+			return;
+		}
+
+		final double reach = Math.max(this.tolerance, 0.001);
+		final int minX = SectionPos.blockToSectionCoord(Mth.floor(worldPos.x - reach));
+		final int minZ = SectionPos.blockToSectionCoord(Mth.floor(worldPos.z - reach));
+		final int maxX = SectionPos.blockToSectionCoord(Mth.floor(worldPos.x + reach));
+		final int maxZ = SectionPos.blockToSectionCoord(Mth.floor(worldPos.z + reach));
+
+		for (int cz = minZ; cz <= maxZ; ++cz)
+		{
+			for (int cx = minX; cx <= maxX; ++cx)
+			{
+				chunks.add(new ChunkPos(cx, cz));
+			}
 		}
 	}
 

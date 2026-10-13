@@ -1103,7 +1103,7 @@ public class LitematicsDataProvider extends DataProviderBase
 	                                 @Nullable Consumer<VerifySession> onComplete)
 	{
 		return this.startVerify(level, placement, layerRange, owner, source, null, true,
-		                        true, VerifyEntityMatcher.DEFAULT_TOLERANCE, onComplete);
+		                        true, VerifyEntityMatcher.DEFAULT_TOLERANCE, false, onComplete);
 	}
 
 	/**
@@ -1114,6 +1114,8 @@ public class LitematicsDataProvider extends DataProviderBase
 	 * @param compareEntities whether to report the schematic's entities that are not in the world
 	 * @param entityTolerance how far, in blocks, a world entity may be from where the schematic
 	 *                        puts it and still count as that entity
+	 * @param reportMatchedEntities whether to send the entities that were found as well, and
+	 *                        which world entity each was found as
 	 */
 	@Nullable
 	public VerifySession startVerify(ServerLevel level,
@@ -1125,6 +1127,7 @@ public class LitematicsDataProvider extends DataProviderBase
 	                                 boolean compareContents,
 	                                 boolean compareEntities,
 	                                 double entityTolerance,
+	                                 boolean reportMatchedEntities,
 	                                 @Nullable Consumer<VerifySession> onComplete)
 	{
 		ServerPlayer player = this.taskPlayerFor(level, owner, source);
@@ -1164,6 +1167,7 @@ public class LitematicsDataProvider extends DataProviderBase
 
 		VerifyEntityMatcher entityMatcher = compareEntities ? new VerifyEntityMatcher(entityTolerance) : null;
 		result.setEntitiesChecked(entityMatcher != null);
+		result.setReportMatchedEntities(entityMatcher != null && reportMatchedEntities);
 
 		TaskVerifySchematicPerChunk task = new TaskVerifySchematicPerChunk(
 				ctx, Collections.singletonList(placement), layerRange, layerBehavior, result,
@@ -1258,10 +1262,14 @@ public class LitematicsDataProvider extends DataProviderBase
 		double entityTolerance = tags.contains("EntityTolerance", Constants.NBT.TAG_DOUBLE)
 		                         ? tags.getDouble("EntityTolerance")
 		                         : VerifyEntityMatcher.DEFAULT_TOLERANCE;
+		// A client that keeps the result up to date needs to know which world entities were
+		// found as which, or it pairs them up again by itself; see setReportMatchedEntities()
+		boolean reportMatchedEntities = tags.contains("ReportMatchedEntities", Constants.NBT.TAG_BYTE) &&
+		                                tags.getBoolean("ReportMatchedEntities");
 
 		VerifySession session = this.startVerify(player.level(), placement, layerRange, player.getUUID(), null,
 		                                         sessionId, compareContents, compareEntities, entityTolerance,
-		                                         this::beginVerifyStreaming);
+		                                         reportMatchedEntities, this::beginVerifyStreaming);
 
 		if (session == null)
 		{
