@@ -174,8 +174,14 @@ public class ServerChunkLoader
 	{
 		ServerChunkCache cache = this.world.getChunkSource();
 
-		if (cache.hasChunk(pos.x, pos.z))
+		if (isLoaded(cache, pos))
 		{
+			// Done with this request. Keeping it would make it stale: once the ticket times
+			// out and the chunk unloads again, the next call would find a finished load and
+			// report a chunk that very much exists as ungenerated. Without it, that call
+			// simply starts over. The ticket itself is still tracked, and released as usual.
+			this.requests.remove(pos);
+
 			return Result.READY;
 		}
 
@@ -200,7 +206,19 @@ public class ServerChunkLoader
 		// full status; report it rather than spinning on it.
 		this.requests.remove(pos);
 
-		return cache.hasChunk(pos.x, pos.z) ? Result.READY : Result.UNGENERATED;
+		return isLoaded(cache, pos) ? Result.READY : Result.UNGENERATED;
+	}
+
+	/**
+	 * Whether the chunk is actually in memory and readable.
+	 * <p>
+	 * Not {@code ServerChunkCache.hasChunk()}: that only checks the ticket level, so it is
+	 * already true the moment a ticket has been added, while the chunk is still on its way.
+	 * Reading such a chunk parks the server thread in {@code getChunk()} until it arrives.
+	 */
+	public static boolean isLoaded(ServerChunkCache cache, ChunkPos pos)
+	{
+		return cache.getChunkNow(pos.x, pos.z) != null;
 	}
 
 	private Result begin(ChunkPos pos, ServerChunkCache cache)
