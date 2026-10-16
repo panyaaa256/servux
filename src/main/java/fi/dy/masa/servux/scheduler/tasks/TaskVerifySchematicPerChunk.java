@@ -165,7 +165,7 @@ public class TaskVerifySchematicPerChunk extends TaskChunkWalkerBase
 	{
 		ServerLevel level = this.context.level();
 
-		if (level.getChunkSource().hasChunk(pos.x, pos.z) == false)
+		if (ServerChunkLoader.isLoaded(level.getChunkSource(), pos) == false)
 		{
 			if (this.chunkLoader == null || this.ungeneratedNeighbours.contains(pos))
 			{

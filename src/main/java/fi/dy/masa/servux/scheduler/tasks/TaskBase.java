@@ -136,9 +136,15 @@ public abstract class TaskBase implements ITask
 		return true;
 	}
 
+	/**
+	 * Whether the chunk is actually in memory. {@code hasChunk()} is not enough: it only checks
+	 * the ticket level, and is already true while a chunk that was just ticketed is still loading.
+	 * <p>
+	 * Must be called from the server thread; anywhere else this always reports false.
+	 */
 	protected boolean isServerChunkLoaded(ServerLevel world, int chunkX, int chunkZ)
 	{
-		return world.getChunkSource().hasChunk(chunkX, chunkZ);
+		return world.getChunkSource().getChunkNow(chunkX, chunkZ) != null;
 	}
 
 	protected ChunkAccess loadServerChunk(ServerLevel world, int chunkX, int chunkZ)
